@@ -10,6 +10,7 @@ CREATE TABLE id_user (
                          email            text UNIQUE,
                          phone            text UNIQUE,
                          username         text UNIQUE,
+                         dob              date,
                          display_name     text,
                          status           smallint NOT NULL DEFAULT 4, -- 1=active, 2=disabled, 3=deleted, 4=unverified
                          created_at       timestamptz NOT NULL DEFAULT now(),
