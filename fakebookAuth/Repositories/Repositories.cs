@@ -745,6 +745,9 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
                 token.session_id AS SessionId,
                 session.user_id AS UserId,
                 token.expires_at AS ExpiresAt,
+                session.expires_at AS SessionExpiresAt,
+                session.revoked_at AS SessionRevokedAt,
+                session.revocation_reason AS SessionRevocationReason,
                 token.replaced_at AS ReplacedAt,
                 token.reuse_detected_at AS ReuseDetectedAt
             FROM fb.id_session_refresh_token token

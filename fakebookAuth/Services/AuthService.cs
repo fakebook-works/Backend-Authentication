@@ -332,6 +332,33 @@ public sealed class AuthService(
 
                 if (replacedToken is not null)
                 {
+                    if (replacedToken.SessionRevokedAt is not null ||
+                        replacedToken.SessionExpiresAt <= now)
+                    {
+                        await auditLogs.InsertAsync(
+                            connection,
+                            transaction,
+                            ids.NewId(),
+                            replacedToken.UserId,
+                            "REVOKED_REFRESH_TOKEN_USED",
+                            metadata,
+                            new
+                            {
+                                replacedToken.SessionId,
+                                replacedToken.SessionRevocationReason
+                            },
+                            cancellationToken);
+
+                        await transaction.CommitAsync(cancellationToken);
+
+                        logger.LogWarning(
+                            "Rejected refresh token for revoked or expired session {SessionId} of user {UserId}.",
+                            replacedToken.SessionId,
+                            replacedToken.UserId);
+
+                        throw GraphQlError("Refresh token is invalid or expired.", "INVALID_REFRESH_TOKEN");
+                    }
+
                     await sessions.MarkRefreshTokenReuseDetectedAsync(
                         connection,
                         transaction,

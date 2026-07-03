@@ -65,6 +65,9 @@ public sealed class ReplacedRefreshToken
     public long SessionId { get; set; }
     public long UserId { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset SessionExpiresAt { get; set; }
+    public DateTimeOffset? SessionRevokedAt { get; set; }
+    public string? SessionRevocationReason { get; set; }
     public DateTimeOffset? ReplacedAt { get; set; }
     public DateTimeOffset? ReuseDetectedAt { get; set; }
 }
