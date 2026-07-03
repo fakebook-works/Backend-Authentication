@@ -112,6 +112,15 @@ CREATE INDEX id_session_user_idx ON id_session (user_id, expires_at);
 -- Lịch sử bảo mật: Thường xuyên query các log MỚI NHẤT của 1 user
 CREATE INDEX id_audit_user_time_idx ON id_audit_log (user_id, created_at DESC);
 
+-- Login rate limit: find the latest successful login and count recent failed logins by identifier.
+CREATE INDEX id_audit_login_success_identifier_time_idx
+    ON id_audit_log ((data ->> 'identifier'), created_at DESC, ip_address)
+    WHERE action = 'LOGIN_SUCCESS';
+
+CREATE INDEX id_audit_login_failure_identifier_time_idx
+    ON id_audit_log ((data ->> 'identifier'), created_at DESC, ip_address)
+    WHERE action = 'LOGIN_FAILURE';
+
 -- Truy vấn verify token cực nhanh lúc user submit OTP
 CREATE INDEX id_verification_token_idx ON id_verification (token_hash);
 
