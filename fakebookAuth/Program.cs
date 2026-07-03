@@ -38,6 +38,8 @@ public static class Program
             .Validate(options => options.EmailVerificationMinutes > 0, "Auth:EmailVerificationMinutes must be greater than zero.")
             .Validate(options => options.PasswordResetMinutes > 0, "Auth:PasswordResetMinutes must be greater than zero.")
             .Validate(options => options.OtpCooldownSeconds >= 0, "Auth:OtpCooldownSeconds must be greater than or equal to zero.")
+            .Validate(options => options.LoginFailureLimit > 0, "Auth:LoginFailureLimit must be greater than zero.")
+            .Validate(options => options.LoginFailureWindowMinutes > 0, "Auth:LoginFailureWindowMinutes must be greater than zero.")
             .ValidateOnStart();
 
         builder.Services

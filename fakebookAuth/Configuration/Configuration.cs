@@ -22,6 +22,8 @@ public sealed class AuthOptions
     public int EmailVerificationMinutes { get; init; } = 15;
     public int PasswordResetMinutes { get; init; } = 15;
     public int OtpCooldownSeconds { get; init; } = 60;
+    public int LoginFailureLimit { get; init; } = 5;
+    public int LoginFailureWindowMinutes { get; init; } = 15;
 }
 
 public sealed class SmtpOptions

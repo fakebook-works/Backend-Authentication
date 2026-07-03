@@ -71,4 +71,10 @@ public sealed class AuthMutations
         [Service] IAuthService authService,
         CancellationToken cancellationToken) =>
         authService.ResetPasswordAsync(input, cancellationToken);
+
+    public Task<AuthActionPayload> ChangePassword(
+        ChangePasswordInput input,
+        [Service] IAuthService authService,
+        CancellationToken cancellationToken) =>
+        authService.ChangePasswordAsync(input, cancellationToken);
 }

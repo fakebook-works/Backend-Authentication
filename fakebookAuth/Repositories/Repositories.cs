@@ -604,6 +604,13 @@ public interface ISessionRepository
         long userId,
         CancellationToken cancellationToken);
 
+    Task RevokeAllByUserIdExceptAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        long userId,
+        long? exceptSessionId,
+        CancellationToken cancellationToken);
+
     Task<IReadOnlyList<UserSession>> ListActiveByUserIdAsync(
         long userId,
         DateTimeOffset now,
@@ -751,6 +758,30 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         await connection.ExecuteAsync(command);
     }
 
+    public async Task RevokeAllByUserIdExceptAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        long userId,
+        long? exceptSessionId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE fb.id_session
+            SET revoked_at = COALESCE(revoked_at, now())
+            WHERE user_id = @UserId
+              AND revoked_at IS NULL
+              AND (@ExceptSessionId IS NULL OR session_id <> @ExceptSessionId);
+            """;
+
+        var command = new CommandDefinition(
+            sql,
+            new { UserId = userId, ExceptSessionId = exceptSessionId },
+            transaction,
+            cancellationToken: cancellationToken);
+
+        await connection.ExecuteAsync(command);
+    }
+
     public async Task<IReadOnlyList<UserSession>> ListActiveByUserIdAsync(
         long userId,
         DateTimeOffset now,
@@ -801,9 +832,15 @@ public interface IAuditLogRepository
         ClientMetadata metadata,
         object data,
         CancellationToken cancellationToken);
+
+    Task<int> CountRecentLoginFailuresAsync(
+        string identifier,
+        ClientMetadata metadata,
+        DateTimeOffset cutoff,
+        CancellationToken cancellationToken);
 }
 
-public sealed class AuditLogRepository : IAuditLogRepository
+public sealed class AuditLogRepository(NpgsqlDataSource dataSource) : IAuditLogRepository
 {
     public async Task InsertAsync(
         DbConnection connection,
@@ -844,5 +881,43 @@ public sealed class AuditLogRepository : IAuditLogRepository
 
         var command = new CommandDefinition(sql, parameters, transaction, cancellationToken: cancellationToken);
         await connection.ExecuteAsync(command);
+    }
+
+    public async Task<int> CountRecentLoginFailuresAsync(
+        string identifier,
+        ClientMetadata metadata,
+        DateTimeOffset cutoff,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            WITH last_success AS (
+                SELECT COALESCE(MAX(created_at), @Cutoff) AS since
+                FROM fb.id_audit_log
+                WHERE action = 'LOGIN_SUCCESS'
+                  AND data ->> 'identifier' = @Identifier
+                  AND created_at >= @Cutoff
+                  AND (@IpAddress IS NULL OR ip_address = CAST(@IpAddress AS inet))
+            )
+            SELECT COUNT(*)::int
+            FROM fb.id_audit_log logs, last_success
+            WHERE logs.action = 'LOGIN_FAILURE'
+              AND logs.data ->> 'identifier' = @Identifier
+              AND logs.created_at >= @Cutoff
+              AND logs.created_at > last_success.since
+              AND (@IpAddress IS NULL OR logs.ip_address = CAST(@IpAddress AS inet));
+            """;
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        var command = new CommandDefinition(
+            sql,
+            new
+            {
+                Identifier = identifier,
+                IpAddress = metadata.IpAddress?.ToString(),
+                Cutoff = cutoff
+            },
+            cancellationToken: cancellationToken);
+
+        return await connection.ExecuteScalarAsync<int>(command);
     }
 }

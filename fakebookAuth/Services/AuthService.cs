@@ -15,6 +15,7 @@ public interface IAuthService
     Task<AuthActionPayload> ResendEmailVerificationAsync(ResendEmailVerificationInput input, CancellationToken cancellationToken);
     Task<AuthActionPayload> RequestPasswordResetAsync(RequestPasswordResetInput input, CancellationToken cancellationToken);
     Task<AuthActionPayload> ResetPasswordAsync(ResetPasswordInput input, CancellationToken cancellationToken);
+    Task<AuthActionPayload> ChangePasswordAsync(ChangePasswordInput input, CancellationToken cancellationToken);
     Task<UserType> MeAsync(CancellationToken cancellationToken);
 }
 
@@ -187,9 +188,13 @@ public sealed class AuthService(
             throw InvalidCredentials();
         }
 
+        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
+        await EnsureLoginNotRateLimitedAsync(identifier, metadata, cancellationToken);
+
         var user = await users.FindByIdentifierAsync(identifier, cancellationToken);
         if (user is null)
         {
+            await RecordLoginFailureAsync(identifier, null, "USER_NOT_FOUND", metadata, cancellationToken);
             throw InvalidCredentials();
         }
 
@@ -206,12 +211,12 @@ public sealed class AuthService(
         var credential = await credentials.FindPasswordCredentialAsync(user.UserId, cancellationToken);
         if (credential?.SecretHash is null || !passwordHasher.Verify(input.Password, credential.SecretHash))
         {
+            await RecordLoginFailureAsync(identifier, user.UserId, "INVALID_PASSWORD", metadata, cancellationToken);
             throw InvalidCredentials();
         }
 
         var refreshToken = tokenService.CreateRefreshToken();
         var refreshExpiresAt = DateTimeOffset.UtcNow.AddDays(_authOptions.RefreshTokenDays);
-        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
         var sessionId = ids.NewId();
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
@@ -238,7 +243,7 @@ public sealed class AuthService(
                 user.UserId,
                 "LOGIN_SUCCESS",
                 metadata,
-                new { sessionId },
+                new { sessionId, identifier },
                 cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
@@ -645,6 +650,69 @@ public sealed class AuthService(
         }
     }
 
+    public async Task<AuthActionPayload> ChangePasswordAsync(
+        ChangePasswordInput input,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(input.CurrentPassword))
+        {
+            throw InvalidCredentials();
+        }
+
+        ValidatePassword(input.NewPassword);
+
+        var (user, principal) = await GetCurrentUserAsync(cancellationToken);
+        var credential = await credentials.FindPasswordCredentialAsync(user.UserId, cancellationToken);
+        if (credential?.SecretHash is null || !passwordHasher.Verify(input.CurrentPassword, credential.SecretHash))
+        {
+            throw InvalidCredentials();
+        }
+
+        if (passwordHasher.Verify(input.NewPassword, credential.SecretHash))
+        {
+            throw GraphQlError("New password must be different from the current password.", "PASSWORD_UNCHANGED");
+        }
+
+        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            await credentials.UpdatePasswordCredentialAsync(
+                connection,
+                transaction,
+                user.UserId,
+                passwordHasher.Hash(input.NewPassword),
+                cancellationToken);
+
+            await sessions.RevokeAllByUserIdExceptAsync(
+                connection,
+                transaction,
+                user.UserId,
+                principal.SessionId,
+                cancellationToken);
+
+            await auditLogs.InsertAsync(
+                connection,
+                transaction,
+                ids.NewId(),
+                user.UserId,
+                "PASSWORD_CHANGED",
+                metadata,
+                new { principal.SessionId },
+                cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+            return new AuthActionPayload(true, "Password has been changed.");
+        }
+        catch
+        {
+            await RollbackQuietlyAsync(transaction, cancellationToken);
+            throw;
+        }
+    }
+
     public async Task<UserType> MeAsync(CancellationToken cancellationToken)
     {
         var (user, _) = await GetCurrentUserAsync(cancellationToken);
@@ -742,6 +810,55 @@ public sealed class AuthService(
         if (nextAllowedAt > DateTimeOffset.UtcNow)
         {
             throw GraphQlError("Please wait before requesting another code.", "OTP_COOLDOWN");
+        }
+    }
+
+    private async Task EnsureLoginNotRateLimitedAsync(
+        string identifier,
+        ClientMetadata metadata,
+        CancellationToken cancellationToken)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddMinutes(-_authOptions.LoginFailureWindowMinutes);
+        var recentFailures = await auditLogs.CountRecentLoginFailuresAsync(
+            identifier,
+            metadata,
+            cutoff,
+            cancellationToken);
+
+        if (recentFailures >= _authOptions.LoginFailureLimit)
+        {
+            throw GraphQlError("Too many failed login attempts. Please try again later.", "LOGIN_RATE_LIMITED");
+        }
+    }
+
+    private async Task RecordLoginFailureAsync(
+        string identifier,
+        long? userId,
+        string reason,
+        ClientMetadata metadata,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            await auditLogs.InsertAsync(
+                connection,
+                transaction,
+                ids.NewId(),
+                userId,
+                "LOGIN_FAILURE",
+                metadata,
+                new { identifier, reason },
+                cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await RollbackQuietlyAsync(transaction, cancellationToken);
+            throw;
         }
     }
 

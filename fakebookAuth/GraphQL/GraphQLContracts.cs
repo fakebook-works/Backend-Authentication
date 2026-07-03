@@ -28,6 +28,8 @@ public sealed record RequestPasswordResetInput(string Identifier);
 
 public sealed record ResetPasswordInput(string Identifier, string Otp, string NewPassword);
 
+public sealed record ChangePasswordInput(string CurrentPassword, string NewPassword);
+
 public sealed record AuthActionPayload(bool Success, string? Message);
 
 public sealed record LoginPayload(
