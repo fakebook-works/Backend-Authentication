@@ -38,7 +38,18 @@ CREATE TABLE id_session (
                             ip_address       inet,
                             expires_at       timestamptz NOT NULL,
                             created_at       timestamptz NOT NULL DEFAULT now(),
+                            last_seen_at     timestamptz NOT NULL DEFAULT now(),
+                            revocation_reason text,
                             revoked_at       timestamptz
+);
+
+CREATE TABLE id_session_refresh_token (
+                            token_hash       text PRIMARY KEY,
+                            session_id       bigint NOT NULL REFERENCES id_session(session_id) ON DELETE CASCADE,
+                            expires_at       timestamptz NOT NULL,
+                            created_at       timestamptz NOT NULL DEFAULT now(),
+                            replaced_at      timestamptz,
+                            reuse_detected_at timestamptz
 );
 
 -- 4. Bảng id_verification (Mã xác thực, OTP, Quên mật khẩu)
@@ -109,6 +120,13 @@ CREATE TABLE id_audit_log (
 -- Lấy danh sách thiết bị/phiên đang hoạt động nhanh chóng
 CREATE INDEX id_session_user_idx ON id_session (user_id, expires_at);
 
+CREATE INDEX id_session_refresh_token_session_idx
+    ON id_session_refresh_token (session_id, created_at DESC);
+
+CREATE INDEX id_session_refresh_token_replaced_idx
+    ON id_session_refresh_token (token_hash)
+    WHERE replaced_at IS NOT NULL;
+
 -- Lịch sử bảo mật: Thường xuyên query các log MỚI NHẤT của 1 user
 CREATE INDEX id_audit_user_time_idx ON id_audit_log (user_id, created_at DESC);
 
@@ -120,6 +138,10 @@ CREATE INDEX id_audit_login_success_identifier_time_idx
 CREATE INDEX id_audit_login_failure_identifier_time_idx
     ON id_audit_log ((data ->> 'identifier'), created_at DESC, ip_address)
     WHERE action = 'LOGIN_FAILURE';
+
+CREATE INDEX id_audit_otp_user_action_type_time_idx
+    ON id_audit_log (user_id, action, (data ->> 'type'), created_at DESC)
+    WHERE action IN ('OTP_RESENT', 'OTP_VERIFICATION_FAILURE');
 
 -- Truy vấn verify token cực nhanh lúc user submit OTP
 CREATE INDEX id_verification_token_idx ON id_verification (token_hash);

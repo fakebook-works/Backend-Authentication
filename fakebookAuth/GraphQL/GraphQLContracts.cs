@@ -22,6 +22,8 @@ public sealed record RefreshTokenInput(string RefreshToken);
 
 public sealed record LogoutInput(string RefreshToken);
 
+public sealed record LogoutSessionInput(long SessionId);
+
 public sealed record ResendEmailVerificationInput(string Identifier);
 
 public sealed record RequestPasswordResetInput(string Identifier);
@@ -30,13 +32,29 @@ public sealed record ResetPasswordInput(string Identifier, string Otp, string Ne
 
 public sealed record ChangePasswordInput(string CurrentPassword, string NewPassword);
 
-public sealed record AuthActionPayload(bool Success, string? Message);
+public sealed record GatewayCookieInstruction(
+    string Operation,
+    string Name,
+    string? Value,
+    string Path,
+    string SameSite,
+    bool HttpOnly,
+    bool Secure,
+    int MaxAgeSeconds,
+    [property: GraphQLType(typeof(DateTimeType))]
+    DateTimeOffset? ExpiresAt);
+
+public sealed record AuthActionPayload(
+    bool Success,
+    string? Message,
+    GatewayCookieInstruction? RefreshTokenCookie = null);
 
 public sealed record LoginPayload(
     string AccessToken,
     string RefreshToken,
     [property: GraphQLType(typeof(DateTimeType))]
     DateTimeOffset RefreshTokenExpiresAt,
+    GatewayCookieInstruction RefreshTokenCookie,
     UserType User);
 
 public sealed record UserType(
@@ -58,6 +76,9 @@ public sealed record SessionType(
     DateTimeOffset ExpiresAt,
     [property: GraphQLType(typeof(DateTimeType))]
     DateTimeOffset CreatedAt,
+    [property: GraphQLType(typeof(DateTimeType))]
+    DateTimeOffset? LastSeenAt,
+    string? RevocationReason,
     [property: GraphQLType(typeof(DateTimeType))]
     DateTimeOffset? RevokedAt,
     bool IsCurrent);

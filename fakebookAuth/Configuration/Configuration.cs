@@ -22,8 +22,20 @@ public sealed class AuthOptions
     public int EmailVerificationMinutes { get; init; } = 15;
     public int PasswordResetMinutes { get; init; } = 15;
     public int OtpCooldownSeconds { get; init; } = 60;
+    public int OtpFailureLimit { get; init; } = 5;
+    public int OtpFailureWindowMinutes { get; init; } = 15;
+    public int OtpResendLimit { get; init; } = 3;
+    public int OtpResendWindowMinutes { get; init; } = 15;
     public int LoginFailureLimit { get; init; } = 5;
     public int LoginFailureWindowMinutes { get; init; } = 15;
+    public string RefreshTokenCookieName { get; init; } = "fb_refresh";
+    public string RefreshTokenCookiePath { get; init; } = "/";
+    public string RefreshTokenCookieSameSite { get; init; } = "Lax";
+    public bool RefreshTokenCookieHttpOnly { get; init; } = true;
+    public bool RefreshTokenCookieSecure { get; init; } = true;
+
+    public int RefreshTokenCookieMaxAgeSeconds =>
+        checked(RefreshTokenDays * 24 * 60 * 60);
 }
 
 public sealed class SmtpOptions

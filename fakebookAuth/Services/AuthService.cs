@@ -11,7 +11,9 @@ public interface IAuthService
     Task<LoginPayload> RefreshTokenAsync(RefreshTokenInput input, CancellationToken cancellationToken);
     Task<AuthActionPayload> LogoutAsync(LogoutInput input, CancellationToken cancellationToken);
     Task<AuthActionPayload> LogoutAllAsync(CancellationToken cancellationToken);
+    Task<AuthActionPayload> LogoutSessionAsync(LogoutSessionInput input, CancellationToken cancellationToken);
     Task<IReadOnlyList<SessionType>> MySessionsAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyList<SessionType>> MySessionHistoryAsync(CancellationToken cancellationToken);
     Task<AuthActionPayload> ResendEmailVerificationAsync(ResendEmailVerificationInput input, CancellationToken cancellationToken);
     Task<AuthActionPayload> RequestPasswordResetAsync(RequestPasswordResetInput input, CancellationToken cancellationToken);
     Task<AuthActionPayload> ResetPasswordAsync(ResetPasswordInput input, CancellationToken cancellationToken);
@@ -31,6 +33,7 @@ public sealed class AuthService(
     IEmailSender emailSender,
     ISnowflakeIdGenerator ids,
     IHttpContextAccessor httpContextAccessor,
+    ILogger<AuthService> logger,
     Microsoft.Extensions.Options.IOptions<AuthOptions> authOptions,
     Microsoft.Extensions.Options.IOptions<SmtpOptions> smtpOptions) : IAuthService
 {
@@ -125,6 +128,7 @@ public sealed class AuthService(
     {
         var identifier = NormalizeIdentifier(input.Identifier);
         var otp = NormalizeOtp(input.Otp);
+        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -148,6 +152,11 @@ public sealed class AuthService(
                 throw GraphQlError("This account has been disabled or deleted.", "ACCOUNT_UNAVAILABLE");
             }
 
+            await EnsureOtpVerificationNotRateLimitedAsync(
+                user.UserId,
+                AuthConstants.EmailVerificationType,
+                cancellationToken);
+
             var verificationId = await verifications.FindValidEmailVerificationIdAsync(
                 connection,
                 transaction,
@@ -158,13 +167,40 @@ public sealed class AuthService(
 
             if (verificationId is null)
             {
+                await auditLogs.InsertAsync(
+                    connection,
+                    transaction,
+                    ids.NewId(),
+                    user.UserId,
+                    "OTP_VERIFICATION_FAILURE",
+                    metadata,
+                    new { Type = AuthConstants.EmailVerificationType, Purpose = "EMAIL_VERIFICATION" },
+                    cancellationToken);
+
+                await transaction.CommitAsync(cancellationToken);
+
+                logger.LogWarning(
+                    "Email verification OTP failed for user {UserId}.",
+                    user.UserId);
+
                 throw GraphQlError("Verification code is invalid or expired.", "INVALID_OR_EXPIRED_VERIFICATION_CODE");
             }
 
             await users.ActivateAsync(connection, transaction, user.UserId, cancellationToken);
             await verifications.MarkUsedAsync(connection, transaction, verificationId.Value, cancellationToken);
+            await auditLogs.InsertAsync(
+                connection,
+                transaction,
+                ids.NewId(),
+                user.UserId,
+                "OTP_VERIFIED",
+                metadata,
+                new { Type = AuthConstants.EmailVerificationType, Purpose = "EMAIL_VERIFICATION" },
+                cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
+
+            logger.LogInformation("Email verified for user {UserId}.", user.UserId);
 
             return new VerifyEmailPayload(true, "Email verified successfully.");
         }
@@ -247,6 +283,11 @@ public sealed class AuthService(
                 cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
+
+            logger.LogInformation(
+                "User {UserId} logged in with session {SessionId}.",
+                user.UserId,
+                sessionId);
         }
         catch
         {
@@ -258,6 +299,7 @@ public sealed class AuthService(
             tokenService.CreateAccessToken(user, sessionId),
             refreshToken,
             refreshExpiresAt,
+            CreateSetRefreshTokenCookie(refreshToken, refreshExpiresAt),
             user.ToGraphQl());
     }
 
@@ -266,6 +308,7 @@ public sealed class AuthService(
         var refreshToken = NormalizeRefreshToken(input.RefreshToken);
         var refreshTokenHash = TokenHashing.Sha256Hex(refreshToken);
         var now = DateTimeOffset.UtcNow;
+        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -281,13 +324,59 @@ public sealed class AuthService(
 
             if (session is null)
             {
+                var replacedToken = await sessions.FindReplacedRefreshTokenAsync(
+                    connection,
+                    transaction,
+                    refreshTokenHash,
+                    cancellationToken);
+
+                if (replacedToken is not null)
+                {
+                    await sessions.MarkRefreshTokenReuseDetectedAsync(
+                        connection,
+                        transaction,
+                        refreshTokenHash,
+                        cancellationToken);
+
+                    await sessions.RevokeAllByUserIdAsync(
+                        connection,
+                        transaction,
+                        replacedToken.UserId,
+                        "REFRESH_TOKEN_REUSE",
+                        cancellationToken);
+
+                    await auditLogs.InsertAsync(
+                        connection,
+                        transaction,
+                        ids.NewId(),
+                        replacedToken.UserId,
+                        "REFRESH_TOKEN_REUSE_DETECTED",
+                        metadata,
+                        new { replacedToken.SessionId },
+                        cancellationToken);
+
+                    await transaction.CommitAsync(cancellationToken);
+
+                    logger.LogWarning(
+                        "Refresh token reuse detected for user {UserId}, session {SessionId}.",
+                        replacedToken.UserId,
+                        replacedToken.SessionId);
+
+                    throw GraphQlError("Refresh token reuse was detected. Please sign in again.", "REFRESH_TOKEN_REUSE_DETECTED");
+                }
+
                 throw GraphQlError("Refresh token is invalid or expired.", "INVALID_REFRESH_TOKEN");
             }
 
             var user = await users.FindByIdAsync(connection, transaction, session.UserId, cancellationToken);
             if (user is null || user.Status is AuthConstants.StatusDisabled or AuthConstants.StatusDeleted)
             {
-                await sessions.RevokeAsync(connection, transaction, session.SessionId, cancellationToken);
+                await sessions.RevokeAsync(
+                    connection,
+                    transaction,
+                    session.SessionId,
+                    "ACCOUNT_UNAVAILABLE",
+                    cancellationToken);
                 throw GraphQlError("This account has been disabled or deleted.", "ACCOUNT_UNAVAILABLE");
             }
 
@@ -298,7 +387,6 @@ public sealed class AuthService(
 
             var newRefreshToken = tokenService.CreateRefreshToken();
             var refreshExpiresAt = now.AddDays(_authOptions.RefreshTokenDays);
-            var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
 
             await sessions.RotateRefreshTokenAsync(
                 connection,
@@ -320,10 +408,16 @@ public sealed class AuthService(
 
             await transaction.CommitAsync(cancellationToken);
 
+            logger.LogInformation(
+                "Refresh token rotated for user {UserId}, session {SessionId}.",
+                user.UserId,
+                session.SessionId);
+
             return new LoginPayload(
                 tokenService.CreateAccessToken(user, session.SessionId),
                 newRefreshToken,
                 refreshExpiresAt,
+                CreateSetRefreshTokenCookie(newRefreshToken, refreshExpiresAt),
                 user.ToGraphQl());
         }
         catch (GraphQLException)
@@ -343,7 +437,7 @@ public sealed class AuthService(
         var refreshToken = input.RefreshToken.Trim();
         if (string.IsNullOrWhiteSpace(refreshToken))
         {
-            return new AuthActionPayload(true, "Logged out.");
+            return new AuthActionPayload(true, "Logged out.", CreateClearRefreshTokenCookie());
         }
 
         var refreshTokenHash = TokenHashing.Sha256Hex(refreshToken);
@@ -363,7 +457,13 @@ public sealed class AuthService(
 
             if (session is not null)
             {
-                await sessions.RevokeAsync(connection, transaction, session.SessionId, cancellationToken);
+                await sessions.RevokeAsync(
+                    connection,
+                    transaction,
+                    session.SessionId,
+                    "LOGOUT",
+                    cancellationToken);
+
                 await auditLogs.InsertAsync(
                     connection,
                     transaction,
@@ -373,10 +473,15 @@ public sealed class AuthService(
                     metadata,
                     new { session.SessionId },
                     cancellationToken);
+
+                logger.LogInformation(
+                    "User {UserId} logged out from session {SessionId}.",
+                    session.UserId,
+                    session.SessionId);
             }
 
             await transaction.CommitAsync(cancellationToken);
-            return new AuthActionPayload(true, "Logged out.");
+            return new AuthActionPayload(true, "Logged out.", CreateClearRefreshTokenCookie());
         }
         catch
         {
@@ -395,7 +500,13 @@ public sealed class AuthService(
 
         try
         {
-            await sessions.RevokeAllByUserIdAsync(connection, transaction, user.UserId, cancellationToken);
+            await sessions.RevokeAllByUserIdAsync(
+                connection,
+                transaction,
+                user.UserId,
+                "LOGOUT_ALL",
+                cancellationToken);
+
             await auditLogs.InsertAsync(
                 connection,
                 transaction,
@@ -407,7 +518,73 @@ public sealed class AuthService(
                 cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
-            return new AuthActionPayload(true, "All sessions have been logged out.");
+            logger.LogInformation("User {UserId} logged out all sessions.", user.UserId);
+            return new AuthActionPayload(true, "All sessions have been logged out.", CreateClearRefreshTokenCookie());
+        }
+        catch
+        {
+            await RollbackQuietlyAsync(transaction, cancellationToken);
+            throw;
+        }
+    }
+
+    public async Task<AuthActionPayload> LogoutSessionAsync(
+        LogoutSessionInput input,
+        CancellationToken cancellationToken)
+    {
+        if (input.SessionId <= 0)
+        {
+            throw GraphQlError("Session id is invalid.", "INVALID_SESSION_ID");
+        }
+
+        var (user, principal) = await GetCurrentUserAsync(cancellationToken);
+        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            var revoked = await sessions.RevokeByUserIdAndSessionIdAsync(
+                connection,
+                transaction,
+                user.UserId,
+                input.SessionId,
+                "SESSION_REVOKED_BY_USER",
+                cancellationToken);
+
+            if (revoked == 0)
+            {
+                throw GraphQlError("Session was not found or is already revoked.", "SESSION_NOT_FOUND");
+            }
+
+            await auditLogs.InsertAsync(
+                connection,
+                transaction,
+                ids.NewId(),
+                user.UserId,
+                "SESSION_REVOKED",
+                metadata,
+                new { input.SessionId, IsCurrentSession = principal.SessionId == input.SessionId },
+                cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+
+            logger.LogInformation(
+                "User {UserId} revoked session {SessionId}.",
+                user.UserId,
+                input.SessionId);
+
+            var clearCookie = principal.SessionId == input.SessionId
+                ? CreateClearRefreshTokenCookie()
+                : null;
+
+            return new AuthActionPayload(true, "Session has been logged out.", clearCookie);
+        }
+        catch (GraphQLException)
+        {
+            await RollbackQuietlyAsync(transaction, cancellationToken);
+            throw;
         }
         catch
         {
@@ -429,11 +606,24 @@ public sealed class AuthService(
             .ToList();
     }
 
+    public async Task<IReadOnlyList<SessionType>> MySessionHistoryAsync(CancellationToken cancellationToken)
+    {
+        var (user, principal) = await GetCurrentUserAsync(cancellationToken);
+        var userSessions = await sessions.ListByUserIdAsync(
+            user.UserId,
+            cancellationToken);
+
+        return userSessions
+            .Select(session => session.ToGraphQl(principal.SessionId))
+            .ToList();
+    }
+
     public async Task<AuthActionPayload> ResendEmailVerificationAsync(
         ResendEmailVerificationInput input,
         CancellationToken cancellationToken)
     {
         var identifier = NormalizeIdentifier(input.Identifier);
+        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -464,6 +654,11 @@ public sealed class AuthService(
                 AuthConstants.EmailVerificationType,
                 cancellationToken);
 
+            await EnsureOtpResendNotRateLimitedAsync(
+                user.UserId,
+                AuthConstants.EmailVerificationType,
+                cancellationToken);
+
             await verifications.MarkUnusedByUserAndTypeAsUsedAsync(
                 connection,
                 transaction,
@@ -482,9 +677,20 @@ public sealed class AuthService(
                 DateTimeOffset.UtcNow.AddMinutes(_authOptions.EmailVerificationMinutes),
                 cancellationToken);
 
+            await auditLogs.InsertAsync(
+                connection,
+                transaction,
+                ids.NewId(),
+                user.UserId,
+                "OTP_RESENT",
+                metadata,
+                new { Type = AuthConstants.EmailVerificationType, Purpose = "EMAIL_VERIFICATION" },
+                cancellationToken);
+
             await transaction.CommitAsync(cancellationToken);
 
             await emailSender.SendVerificationOtpAsync(user.Email, user.DisplayName, otp, cancellationToken);
+            logger.LogInformation("Email verification OTP resent for user {UserId}.", user.UserId);
             return new AuthActionPayload(true, "Verification code sent. Please check your email.");
         }
         catch (GraphQLException)
@@ -504,6 +710,7 @@ public sealed class AuthService(
         CancellationToken cancellationToken)
     {
         var identifier = NormalizeIdentifier(input.Identifier);
+        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
         IdentityUser? userToEmail = null;
         string? otpToEmail = null;
 
@@ -519,6 +726,11 @@ public sealed class AuthService(
                 await EnsureOtpCooldownAsync(
                     connection,
                     transaction,
+                    user.UserId,
+                    AuthConstants.PasswordResetVerificationType,
+                    cancellationToken);
+
+                await EnsureOtpResendNotRateLimitedAsync(
                     user.UserId,
                     AuthConstants.PasswordResetVerificationType,
                     cancellationToken);
@@ -539,6 +751,16 @@ public sealed class AuthService(
                     AuthConstants.PasswordResetVerificationType,
                     TokenHashing.Sha256Hex(otp),
                     DateTimeOffset.UtcNow.AddMinutes(_authOptions.PasswordResetMinutes),
+                    cancellationToken);
+
+                await auditLogs.InsertAsync(
+                    connection,
+                    transaction,
+                    ids.NewId(),
+                    user.UserId,
+                    "OTP_RESENT",
+                    metadata,
+                    new { Type = AuthConstants.PasswordResetVerificationType, Purpose = "PASSWORD_RESET" },
                     cancellationToken);
 
                 userToEmail = user;
@@ -565,6 +787,8 @@ public sealed class AuthService(
                 userToEmail.DisplayName,
                 otpToEmail,
                 cancellationToken);
+
+            logger.LogInformation("Password reset OTP sent for user {UserId}.", userToEmail.UserId);
         }
 
         return new AuthActionPayload(true, "If the account exists, a password reset code has been sent.");
@@ -577,6 +801,7 @@ public sealed class AuthService(
         var identifier = NormalizeIdentifier(input.Identifier);
         var otp = NormalizeOtp(input.Otp);
         ValidatePassword(input.NewPassword);
+        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -589,6 +814,11 @@ public sealed class AuthService(
                 throw GraphQlError("Password reset code is invalid or expired.", "INVALID_OR_EXPIRED_PASSWORD_RESET_CODE");
             }
 
+            await EnsureOtpVerificationNotRateLimitedAsync(
+                user.UserId,
+                AuthConstants.PasswordResetVerificationType,
+                cancellationToken);
+
             var verificationId = await verifications.FindValidVerificationIdAsync(
                 connection,
                 transaction,
@@ -600,6 +830,22 @@ public sealed class AuthService(
 
             if (verificationId is null)
             {
+                await auditLogs.InsertAsync(
+                    connection,
+                    transaction,
+                    ids.NewId(),
+                    user.UserId,
+                    "OTP_VERIFICATION_FAILURE",
+                    metadata,
+                    new { Type = AuthConstants.PasswordResetVerificationType, Purpose = "PASSWORD_RESET" },
+                    cancellationToken);
+
+                await transaction.CommitAsync(cancellationToken);
+
+                logger.LogWarning(
+                    "Password reset OTP failed for user {UserId}.",
+                    user.UserId);
+
                 throw GraphQlError("Password reset code is invalid or expired.", "INVALID_OR_EXPIRED_PASSWORD_RESET_CODE");
             }
 
@@ -623,7 +869,22 @@ public sealed class AuthService(
             }
 
             await verifications.MarkUsedAsync(connection, transaction, verificationId.Value, cancellationToken);
-            await sessions.RevokeAllByUserIdAsync(connection, transaction, user.UserId, cancellationToken);
+            await sessions.RevokeAllByUserIdAsync(
+                connection,
+                transaction,
+                user.UserId,
+                "PASSWORD_RESET",
+                cancellationToken);
+
+            await auditLogs.InsertAsync(
+                connection,
+                transaction,
+                ids.NewId(),
+                user.UserId,
+                "OTP_VERIFIED",
+                metadata,
+                new { Type = AuthConstants.PasswordResetVerificationType, Purpose = "PASSWORD_RESET" },
+                cancellationToken);
 
             await auditLogs.InsertAsync(
                 connection,
@@ -631,11 +892,12 @@ public sealed class AuthService(
                 ids.NewId(),
                 user.UserId,
                 "PASSWORD_RESET",
-                ClientMetadata.From(httpContextAccessor.HttpContext),
+                metadata,
                 new { },
                 cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
+            logger.LogInformation("Password reset completed for user {UserId}.", user.UserId);
             return new AuthActionPayload(true, "Password has been reset.");
         }
         catch (GraphQLException)
@@ -691,6 +953,7 @@ public sealed class AuthService(
                 transaction,
                 user.UserId,
                 principal.SessionId,
+                "PASSWORD_CHANGED",
                 cancellationToken);
 
             await auditLogs.InsertAsync(
@@ -704,6 +967,7 @@ public sealed class AuthService(
                 cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
+            logger.LogInformation("Password changed for user {UserId}.", user.UserId);
             return new AuthActionPayload(true, "Password has been changed.");
         }
         catch
@@ -813,6 +1077,54 @@ public sealed class AuthService(
         }
     }
 
+    private async Task EnsureOtpVerificationNotRateLimitedAsync(
+        long userId,
+        short type,
+        CancellationToken cancellationToken)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddMinutes(-_authOptions.OtpFailureWindowMinutes);
+        var recentFailures = await auditLogs.CountRecentUserActionsAsync(
+            userId,
+            "OTP_VERIFICATION_FAILURE",
+            type,
+            cutoff,
+            cancellationToken);
+
+        if (recentFailures >= _authOptions.OtpFailureLimit)
+        {
+            logger.LogWarning(
+                "OTP verification rate limit hit for user {UserId}, type {OtpType}.",
+                userId,
+                type);
+
+            throw GraphQlError("Too many invalid verification code attempts. Please try again later.", "OTP_RATE_LIMITED");
+        }
+    }
+
+    private async Task EnsureOtpResendNotRateLimitedAsync(
+        long userId,
+        short type,
+        CancellationToken cancellationToken)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddMinutes(-_authOptions.OtpResendWindowMinutes);
+        var recentResends = await auditLogs.CountRecentUserActionsAsync(
+            userId,
+            "OTP_RESENT",
+            type,
+            cutoff,
+            cancellationToken);
+
+        if (recentResends >= _authOptions.OtpResendLimit)
+        {
+            logger.LogWarning(
+                "OTP resend rate limit hit for user {UserId}, type {OtpType}.",
+                userId,
+                type);
+
+            throw GraphQlError("Too many verification code requests. Please try again later.", "OTP_RESEND_RATE_LIMITED");
+        }
+    }
+
     private async Task EnsureLoginNotRateLimitedAsync(
         string identifier,
         ClientMetadata metadata,
@@ -883,6 +1195,25 @@ public sealed class AuthService(
             throw GraphQlError("This account has been disabled or deleted.", "ACCOUNT_UNAVAILABLE");
         }
 
+        if (principal.SessionId is not null)
+        {
+            var sessionIsActive = await sessions.ExistsActiveSessionAsync(
+                user.UserId,
+                principal.SessionId.Value,
+                DateTimeOffset.UtcNow,
+                cancellationToken);
+
+            if (!sessionIsActive)
+            {
+                logger.LogWarning(
+                    "Rejected access token for revoked or expired session {SessionId} of user {UserId}.",
+                    principal.SessionId.Value,
+                    user.UserId);
+
+                throw Unauthenticated();
+            }
+        }
+
         return (user, principal);
     }
 
@@ -926,6 +1257,32 @@ public sealed class AuthService(
 
     private static GraphQLException GraphQlError(string message, string code) =>
         new(ErrorBuilder.New().SetMessage(message).SetCode(code).Build());
+
+    private GatewayCookieInstruction CreateSetRefreshTokenCookie(
+        string refreshToken,
+        DateTimeOffset expiresAt) =>
+        new(
+            "SET",
+            _authOptions.RefreshTokenCookieName,
+            refreshToken,
+            _authOptions.RefreshTokenCookiePath,
+            _authOptions.RefreshTokenCookieSameSite,
+            _authOptions.RefreshTokenCookieHttpOnly,
+            _authOptions.RefreshTokenCookieSecure,
+            _authOptions.RefreshTokenCookieMaxAgeSeconds,
+            expiresAt);
+
+    private GatewayCookieInstruction CreateClearRefreshTokenCookie() =>
+        new(
+            "CLEAR",
+            _authOptions.RefreshTokenCookieName,
+            string.Empty,
+            _authOptions.RefreshTokenCookiePath,
+            _authOptions.RefreshTokenCookieSameSite,
+            _authOptions.RefreshTokenCookieHttpOnly,
+            _authOptions.RefreshTokenCookieSecure,
+            0,
+            DateTimeOffset.UnixEpoch);
 
     private sealed record NormalizedRegisterInput(
         string DisplayName,

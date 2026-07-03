@@ -40,6 +40,8 @@ public sealed class UserSession
     public IPAddress? IpAddress { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? LastSeenAt { get; set; }
+    public string? RevocationReason { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
 
     public SessionType ToGraphQl(long? currentSessionId) =>
@@ -51,8 +53,20 @@ public sealed class UserSession
             IpAddress?.ToString(),
             ExpiresAt,
             CreatedAt,
+            LastSeenAt,
+            RevocationReason,
             RevokedAt,
             currentSessionId == SessionId);
+}
+
+public sealed class ReplacedRefreshToken
+{
+    public string TokenHash { get; set; } = string.Empty;
+    public long SessionId { get; set; }
+    public long UserId { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? ReplacedAt { get; set; }
+    public DateTimeOffset? ReuseDetectedAt { get; set; }
 }
 
 public sealed class UserCredential

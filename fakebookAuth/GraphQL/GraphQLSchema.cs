@@ -15,6 +15,11 @@ public sealed class Query
         [Service] IAuthService authService,
         CancellationToken cancellationToken) =>
         authService.MySessionsAsync(cancellationToken);
+
+    public Task<IReadOnlyList<SessionType>> MySessionHistory(
+        [Service] IAuthService authService,
+        CancellationToken cancellationToken) =>
+        authService.MySessionHistoryAsync(cancellationToken);
 }
 
 public sealed class AuthMutations
@@ -53,6 +58,12 @@ public sealed class AuthMutations
         [Service] IAuthService authService,
         CancellationToken cancellationToken) =>
         authService.LogoutAllAsync(cancellationToken);
+
+    public Task<AuthActionPayload> LogoutSession(
+        LogoutSessionInput input,
+        [Service] IAuthService authService,
+        CancellationToken cancellationToken) =>
+        authService.LogoutSessionAsync(input, cancellationToken);
 
     public Task<AuthActionPayload> ResendEmailVerification(
         ResendEmailVerificationInput input,

@@ -584,6 +584,18 @@ public interface ISessionRepository
         DateTimeOffset now,
         CancellationToken cancellationToken);
 
+    Task<ReplacedRefreshToken?> FindReplacedRefreshTokenAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string refreshTokenHash,
+        CancellationToken cancellationToken);
+
+    Task<bool> ExistsActiveSessionAsync(
+        long userId,
+        long sessionId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken);
+
     Task RotateRefreshTokenAsync(
         DbConnection connection,
         DbTransaction transaction,
@@ -596,12 +608,22 @@ public interface ISessionRepository
         DbConnection connection,
         DbTransaction transaction,
         long sessionId,
+        string reason,
+        CancellationToken cancellationToken);
+
+    Task<int> RevokeByUserIdAndSessionIdAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        long userId,
+        long sessionId,
+        string reason,
         CancellationToken cancellationToken);
 
     Task RevokeAllByUserIdAsync(
         DbConnection connection,
         DbTransaction transaction,
         long userId,
+        string reason,
         CancellationToken cancellationToken);
 
     Task RevokeAllByUserIdExceptAsync(
@@ -609,11 +631,22 @@ public interface ISessionRepository
         DbTransaction transaction,
         long userId,
         long? exceptSessionId,
+        string reason,
+        CancellationToken cancellationToken);
+
+    Task MarkRefreshTokenReuseDetectedAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string refreshTokenHash,
         CancellationToken cancellationToken);
 
     Task<IReadOnlyList<UserSession>> ListActiveByUserIdAsync(
         long userId,
         DateTimeOffset now,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<UserSession>> ListByUserIdAsync(
+        long userId,
         CancellationToken cancellationToken);
 }
 
@@ -648,6 +681,16 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
                 @Browser,
                 CAST(@IpAddress AS inet),
                 @ExpiresAt);
+
+            INSERT INTO fb.id_session_refresh_token (
+                token_hash,
+                session_id,
+                expires_at)
+            VALUES (
+                @RefreshToken,
+                @SessionId,
+                @ExpiresAt)
+            ON CONFLICT (token_hash) DO NOTHING;
             """;
 
         var parameters = new
@@ -690,6 +733,62 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         return await connection.QuerySingleOrDefaultAsync<UserSession>(command);
     }
 
+    public async Task<ReplacedRefreshToken?> FindReplacedRefreshTokenAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string refreshTokenHash,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                token.token_hash AS TokenHash,
+                token.session_id AS SessionId,
+                session.user_id AS UserId,
+                token.expires_at AS ExpiresAt,
+                token.replaced_at AS ReplacedAt,
+                token.reuse_detected_at AS ReuseDetectedAt
+            FROM fb.id_session_refresh_token token
+            INNER JOIN fb.id_session session ON session.session_id = token.session_id
+            WHERE token.token_hash = @RefreshTokenHash
+              AND token.replaced_at IS NOT NULL
+            LIMIT 1;
+            """;
+
+        var command = new CommandDefinition(
+            sql,
+            new { RefreshTokenHash = refreshTokenHash },
+            transaction,
+            cancellationToken: cancellationToken);
+
+        return await connection.QuerySingleOrDefaultAsync<ReplacedRefreshToken>(command);
+    }
+
+    public async Task<bool> ExistsActiveSessionAsync(
+        long userId,
+        long sessionId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM fb.id_session
+                WHERE user_id = @UserId
+                  AND session_id = @SessionId
+                  AND revoked_at IS NULL
+                  AND expires_at > @Now
+            );
+            """;
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        var command = new CommandDefinition(
+            sql,
+            new { UserId = userId, SessionId = sessionId, Now = now },
+            cancellationToken: cancellationToken);
+
+        return await connection.ExecuteScalarAsync<bool>(command);
+    }
+
     public async Task RotateRefreshTokenAsync(
         DbConnection connection,
         DbTransaction transaction,
@@ -699,11 +798,40 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         CancellationToken cancellationToken)
     {
         const string sql = """
+            INSERT INTO fb.id_session_refresh_token (
+                token_hash,
+                session_id,
+                expires_at,
+                created_at,
+                replaced_at)
+            SELECT
+                refresh_token,
+                session_id,
+                expires_at,
+                created_at,
+                now()
+            FROM fb.id_session
+            WHERE session_id = @SessionId
+              AND revoked_at IS NULL
+            ON CONFLICT (token_hash) DO UPDATE
+            SET replaced_at = COALESCE(fb.id_session_refresh_token.replaced_at, now());
+
             UPDATE fb.id_session
             SET refresh_token = @RefreshTokenHash,
-                expires_at = @ExpiresAt
+                expires_at = @ExpiresAt,
+                last_seen_at = now()
             WHERE session_id = @SessionId
               AND revoked_at IS NULL;
+
+            INSERT INTO fb.id_session_refresh_token (
+                token_hash,
+                session_id,
+                expires_at)
+            VALUES (
+                @RefreshTokenHash,
+                @SessionId,
+                @ExpiresAt)
+            ON CONFLICT (token_hash) DO NOTHING;
             """;
 
         var command = new CommandDefinition(
@@ -719,39 +847,69 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         DbConnection connection,
         DbTransaction transaction,
         long sessionId,
+        string reason,
         CancellationToken cancellationToken)
     {
         const string sql = """
             UPDATE fb.id_session
-            SET revoked_at = COALESCE(revoked_at, now())
+            SET revoked_at = COALESCE(revoked_at, now()),
+                revocation_reason = COALESCE(revocation_reason, @Reason)
             WHERE session_id = @SessionId;
             """;
 
         var command = new CommandDefinition(
             sql,
-            new { SessionId = sessionId },
+            new { SessionId = sessionId, Reason = reason },
             transaction,
             cancellationToken: cancellationToken);
 
         await connection.ExecuteAsync(command);
     }
 
-    public async Task RevokeAllByUserIdAsync(
+    public async Task<int> RevokeByUserIdAndSessionIdAsync(
         DbConnection connection,
         DbTransaction transaction,
         long userId,
+        long sessionId,
+        string reason,
         CancellationToken cancellationToken)
     {
         const string sql = """
             UPDATE fb.id_session
-            SET revoked_at = COALESCE(revoked_at, now())
+            SET revoked_at = COALESCE(revoked_at, now()),
+                revocation_reason = COALESCE(revocation_reason, @Reason)
+            WHERE user_id = @UserId
+              AND session_id = @SessionId
+              AND revoked_at IS NULL;
+            """;
+
+        var command = new CommandDefinition(
+            sql,
+            new { UserId = userId, SessionId = sessionId, Reason = reason },
+            transaction,
+            cancellationToken: cancellationToken);
+
+        return await connection.ExecuteAsync(command);
+    }
+
+    public async Task RevokeAllByUserIdAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        long userId,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE fb.id_session
+            SET revoked_at = COALESCE(revoked_at, now()),
+                revocation_reason = COALESCE(revocation_reason, @Reason)
             WHERE user_id = @UserId
               AND revoked_at IS NULL;
             """;
 
         var command = new CommandDefinition(
             sql,
-            new { UserId = userId },
+            new { UserId = userId, Reason = reason },
             transaction,
             cancellationToken: cancellationToken);
 
@@ -763,11 +921,13 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         DbTransaction transaction,
         long userId,
         long? exceptSessionId,
+        string reason,
         CancellationToken cancellationToken)
     {
         const string sql = """
             UPDATE fb.id_session
-            SET revoked_at = COALESCE(revoked_at, now())
+            SET revoked_at = COALESCE(revoked_at, now()),
+                revocation_reason = COALESCE(revocation_reason, @Reason)
             WHERE user_id = @UserId
               AND revoked_at IS NULL
               AND (@ExceptSessionId IS NULL OR session_id <> @ExceptSessionId);
@@ -775,7 +935,28 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
 
         var command = new CommandDefinition(
             sql,
-            new { UserId = userId, ExceptSessionId = exceptSessionId },
+            new { UserId = userId, ExceptSessionId = exceptSessionId, Reason = reason },
+            transaction,
+            cancellationToken: cancellationToken);
+
+        await connection.ExecuteAsync(command);
+    }
+
+    public async Task MarkRefreshTokenReuseDetectedAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string refreshTokenHash,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE fb.id_session_refresh_token
+            SET reuse_detected_at = COALESCE(reuse_detected_at, now())
+            WHERE token_hash = @RefreshTokenHash;
+            """;
+
+        var command = new CommandDefinition(
+            sql,
+            new { RefreshTokenHash = refreshTokenHash },
             transaction,
             cancellationToken: cancellationToken);
 
@@ -805,6 +986,26 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         return rows.AsList();
     }
 
+    public async Task<IReadOnlyList<UserSession>> ListByUserIdAsync(
+        long userId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = $"""
+            {SelectSessionSql}
+            WHERE user_id = @UserId
+            ORDER BY created_at DESC;
+            """;
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        var command = new CommandDefinition(
+            sql,
+            new { UserId = userId },
+            cancellationToken: cancellationToken);
+
+        var rows = await connection.QueryAsync<UserSession>(command);
+        return rows.AsList();
+    }
+
     private const string SelectSessionSql = """
         SELECT
             session_id AS SessionId,
@@ -816,6 +1017,8 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
             ip_address AS IpAddress,
             expires_at AS ExpiresAt,
             created_at AS CreatedAt,
+            last_seen_at AS LastSeenAt,
+            revocation_reason AS RevocationReason,
             revoked_at AS RevokedAt
         FROM fb.id_session
         """;
@@ -836,6 +1039,13 @@ public interface IAuditLogRepository
     Task<int> CountRecentLoginFailuresAsync(
         string identifier,
         ClientMetadata metadata,
+        DateTimeOffset cutoff,
+        CancellationToken cancellationToken);
+
+    Task<int> CountRecentUserActionsAsync(
+        long userId,
+        string action,
+        short? verificationType,
         DateTimeOffset cutoff,
         CancellationToken cancellationToken);
 }
@@ -914,6 +1124,38 @@ public sealed class AuditLogRepository(NpgsqlDataSource dataSource) : IAuditLogR
             {
                 Identifier = identifier,
                 IpAddress = metadata.IpAddress?.ToString(),
+                Cutoff = cutoff
+            },
+            cancellationToken: cancellationToken);
+
+        return await connection.ExecuteScalarAsync<int>(command);
+    }
+
+    public async Task<int> CountRecentUserActionsAsync(
+        long userId,
+        string action,
+        short? verificationType,
+        DateTimeOffset cutoff,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT COUNT(*)::int
+            FROM fb.id_audit_log
+            WHERE user_id = @UserId
+              AND action = @Action
+              AND created_at >= @Cutoff
+              AND (@VerificationType IS NULL OR data ->> 'type' = @VerificationTypeText);
+            """;
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        var command = new CommandDefinition(
+            sql,
+            new
+            {
+                UserId = userId,
+                Action = action,
+                VerificationType = verificationType,
+                VerificationTypeText = verificationType?.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 Cutoff = cutoff
             },
             cancellationToken: cancellationToken);
