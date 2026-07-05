@@ -38,6 +38,15 @@ public sealed class AuthOptions
         checked(RefreshTokenDays * 24 * 60 * 60);
 }
 
+public sealed class GatewayOptions
+{
+    public const string SectionName = "Gateway";
+
+    public string InternalSharedSecret { get; init; } = string.Empty;
+
+    public int InternalSharedSecretBytes => Encoding.UTF8.GetByteCount(InternalSharedSecret);
+}
+
 public sealed class SmtpOptions
 {
     public const string SectionName = "Smtp";

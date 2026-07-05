@@ -18,9 +18,9 @@ public sealed record VerifyEmailPayload(bool Success, string? Message);
 
 public sealed record LoginInput(string Identifier, string Password);
 
-public sealed record RefreshTokenInput(string RefreshToken);
+public sealed record RefreshTokenInput(string? RefreshToken);
 
-public sealed record LogoutInput(string RefreshToken);
+public sealed record LogoutInput(string? RefreshToken);
 
 public sealed record LogoutSessionInput(long SessionId);
 
@@ -31,6 +31,17 @@ public sealed record RequestPasswordResetInput(string Identifier);
 public sealed record ResetPasswordInput(string Identifier, string Otp, string NewPassword);
 
 public sealed record ChangePasswordInput(string CurrentPassword, string NewPassword);
+
+public sealed record GatewaySessionValidationInput(long UserId, long SessionId);
+
+public sealed record GatewaySessionValidationPayload(
+    bool IsValid,
+    long? UserId,
+    long? SessionId,
+    string? Username,
+    short? Status,
+    [property: GraphQLType(typeof(DateTimeType))]
+    DateTimeOffset? ExpiresAt);
 
 public sealed record GatewayCookieInstruction(
     string Operation,

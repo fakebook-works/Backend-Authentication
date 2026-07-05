@@ -596,6 +596,12 @@ public interface ISessionRepository
         DateTimeOffset now,
         CancellationToken cancellationToken);
 
+    Task<UserSession?> FindActiveSessionAsync(
+        long userId,
+        long sessionId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken);
+
     Task RotateRefreshTokenAsync(
         DbConnection connection,
         DbTransaction transaction,
@@ -790,6 +796,30 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
             cancellationToken: cancellationToken);
 
         return await connection.ExecuteScalarAsync<bool>(command);
+    }
+
+    public async Task<UserSession?> FindActiveSessionAsync(
+        long userId,
+        long sessionId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        const string sql = $"""
+            {SelectSessionSql}
+            WHERE user_id = @UserId
+              AND session_id = @SessionId
+              AND revoked_at IS NULL
+              AND expires_at > @Now
+            LIMIT 1;
+            """;
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        var command = new CommandDefinition(
+            sql,
+            new { UserId = userId, SessionId = sessionId, Now = now },
+            cancellationToken: cancellationToken);
+
+        return await connection.QuerySingleOrDefaultAsync<UserSession>(command);
     }
 
     public async Task RotateRefreshTokenAsync(

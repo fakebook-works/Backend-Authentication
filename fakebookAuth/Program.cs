@@ -52,6 +52,14 @@ public static class Program
             .ValidateOnStart();
 
         builder.Services
+            .AddOptions<GatewayOptions>()
+            .Bind(builder.Configuration.GetSection(GatewayOptions.SectionName))
+            .Validate(
+                options => options.InternalSharedSecretBytes == 0 || options.InternalSharedSecretBytes >= 32,
+                "Gateway:InternalSharedSecret must be at least 32 bytes when configured.")
+            .ValidateOnStart();
+
+        builder.Services
             .AddOptions<SmtpOptions>()
             .Bind(builder.Configuration.GetSection(SmtpOptions.SectionName))
             .Validate(options => !options.Enabled || options.IsConfigured, "SMTP must be fully configured when Smtp:Enabled is true.")
@@ -79,7 +87,7 @@ public static class Program
         builder.Services.AddScoped<IAuthService, AuthService>();
 
         builder.Services
-            .AddGraphQLServer()
+            .AddGraphQLServer("Authentication")
             .ModifyRequestOptions(options => options.IncludeExceptionDetails = builder.Environment.IsDevelopment())
             .AddQueryType<Query>()
             .AddMutationType<AuthMutations>()
@@ -110,6 +118,6 @@ public static class Program
         app.MapGraphQL();
         app.MapGet("/", () => Results.Redirect("/graphql"));
 
-        app.Run();
+        app.RunWithGraphQLCommands(args);
     }
 }

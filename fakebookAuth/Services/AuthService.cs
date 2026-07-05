@@ -1,4 +1,7 @@
 using System.ComponentModel.DataAnnotations;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Npgsql;
 
 namespace fakebookAuth;
@@ -8,8 +11,8 @@ public interface IAuthService
     Task<RegisterPayload> RegisterAsync(RegisterInput input, CancellationToken cancellationToken);
     Task<VerifyEmailPayload> VerifyEmailAsync(VerifyEmailInput input, CancellationToken cancellationToken);
     Task<LoginPayload> LoginAsync(LoginInput input, CancellationToken cancellationToken);
-    Task<LoginPayload> RefreshTokenAsync(RefreshTokenInput input, CancellationToken cancellationToken);
-    Task<AuthActionPayload> LogoutAsync(LogoutInput input, CancellationToken cancellationToken);
+    Task<LoginPayload> RefreshTokenAsync(RefreshTokenInput? input, CancellationToken cancellationToken);
+    Task<AuthActionPayload> LogoutAsync(LogoutInput? input, CancellationToken cancellationToken);
     Task<AuthActionPayload> LogoutAllAsync(CancellationToken cancellationToken);
     Task<AuthActionPayload> LogoutSessionAsync(LogoutSessionInput input, CancellationToken cancellationToken);
     Task<IReadOnlyList<SessionType>> MySessionsAsync(CancellationToken cancellationToken);
@@ -19,6 +22,9 @@ public interface IAuthService
     Task<AuthActionPayload> ResetPasswordAsync(ResetPasswordInput input, CancellationToken cancellationToken);
     Task<AuthActionPayload> ChangePasswordAsync(ChangePasswordInput input, CancellationToken cancellationToken);
     Task<UserType> MeAsync(CancellationToken cancellationToken);
+    Task<GatewaySessionValidationPayload> ValidateGatewaySessionAsync(
+        GatewaySessionValidationInput input,
+        CancellationToken cancellationToken);
 }
 
 public sealed class AuthService(
@@ -35,9 +41,17 @@ public sealed class AuthService(
     IHttpContextAccessor httpContextAccessor,
     ILogger<AuthService> logger,
     Microsoft.Extensions.Options.IOptions<AuthOptions> authOptions,
+    Microsoft.Extensions.Options.IOptions<GatewayOptions> gatewayOptions,
     Microsoft.Extensions.Options.IOptions<SmtpOptions> smtpOptions) : IAuthService
 {
+    private const string GatewaySecretHeaderName = "X-Gateway-Secret";
+    private const string GatewayRefreshTokenHeaderName = "X-Refresh-Token";
+    private const string GatewayCookieInstructionHeaderName = "X-Fakebook-Refresh-Cookie-Instruction";
+
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     private readonly AuthOptions _authOptions = authOptions.Value;
+    private readonly GatewayOptions _gatewayOptions = gatewayOptions.Value;
     private readonly SmtpOptions _smtpOptions = smtpOptions.Value;
 
     public async Task<RegisterPayload> RegisterAsync(RegisterInput input, CancellationToken cancellationToken)
@@ -303,9 +317,9 @@ public sealed class AuthService(
             user.ToGraphQl());
     }
 
-    public async Task<LoginPayload> RefreshTokenAsync(RefreshTokenInput input, CancellationToken cancellationToken)
+    public async Task<LoginPayload> RefreshTokenAsync(RefreshTokenInput? input, CancellationToken cancellationToken)
     {
-        var refreshToken = NormalizeRefreshToken(input.RefreshToken);
+        var refreshToken = ResolveRefreshToken(input?.RefreshToken);
         var refreshTokenHash = TokenHashing.Sha256Hex(refreshToken);
         var now = DateTimeOffset.UtcNow;
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
@@ -459,9 +473,9 @@ public sealed class AuthService(
         }
     }
 
-    public async Task<AuthActionPayload> LogoutAsync(LogoutInput input, CancellationToken cancellationToken)
+    public async Task<AuthActionPayload> LogoutAsync(LogoutInput? input, CancellationToken cancellationToken)
     {
-        var refreshToken = input.RefreshToken.Trim();
+        var refreshToken = ResolveRefreshToken(input?.RefreshToken, allowMissing: true);
         if (string.IsNullOrWhiteSpace(refreshToken))
         {
             return new AuthActionPayload(true, "Logged out.", CreateClearRefreshTokenCookie());
@@ -1010,6 +1024,60 @@ public sealed class AuthService(
         return user.ToGraphQl();
     }
 
+    public async Task<GatewaySessionValidationPayload> ValidateGatewaySessionAsync(
+        GatewaySessionValidationInput input,
+        CancellationToken cancellationToken)
+    {
+        EnsureGatewaySecret();
+
+        if (input.UserId <= 0 || input.SessionId <= 0)
+        {
+            return InvalidGatewaySession(input.UserId, input.SessionId);
+        }
+
+        var user = await users.FindByIdAsync(input.UserId, cancellationToken);
+        if (user is null)
+        {
+            return InvalidGatewaySession(input.UserId, input.SessionId);
+        }
+
+        if (user.Status != AuthConstants.StatusActive)
+        {
+            return new GatewaySessionValidationPayload(
+                false,
+                user.UserId,
+                input.SessionId,
+                user.Username,
+                user.Status,
+                null);
+        }
+
+        var session = await sessions.FindActiveSessionAsync(
+            user.UserId,
+            input.SessionId,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+
+        if (session is null)
+        {
+            return new GatewaySessionValidationPayload(
+                false,
+                user.UserId,
+                input.SessionId,
+                user.Username,
+                user.Status,
+                null);
+        }
+
+        return new GatewaySessionValidationPayload(
+            true,
+            user.UserId,
+            session.SessionId,
+            user.Username,
+            user.Status,
+            session.ExpiresAt);
+    }
+
     private static NormalizedRegisterInput NormalizeAndValidate(RegisterInput input)
     {
         var email = NormalizeIdentifier(input.Email);
@@ -1043,16 +1111,58 @@ public sealed class AuthService(
 
     private static string NormalizeIdentifier(string value) => value.Trim().ToLowerInvariant();
 
-    private static string NormalizeRefreshToken(string value)
+    private string ResolveRefreshToken(string? value, bool allowMissing = false)
     {
-        var refreshToken = value.Trim();
+        var refreshToken = value?.Trim();
         if (string.IsNullOrWhiteSpace(refreshToken))
         {
+            refreshToken = httpContextAccessor.HttpContext
+                ?.Request
+                .Headers[GatewayRefreshTokenHeaderName]
+                .ToString()
+                .Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(refreshToken))
+        {
+            if (allowMissing)
+            {
+                return string.Empty;
+            }
+
             throw GraphQlError("Refresh token is required.", "INVALID_REFRESH_TOKEN");
         }
 
         return refreshToken;
     }
+
+    private void EnsureGatewaySecret()
+    {
+        var expected = _gatewayOptions.InternalSharedSecret;
+        var provided = httpContextAccessor.HttpContext
+            ?.Request
+            .Headers[GatewaySecretHeaderName]
+            .ToString();
+
+        if (string.IsNullOrWhiteSpace(expected) ||
+            string.IsNullOrWhiteSpace(provided) ||
+            !FixedTimeEquals(expected, provided))
+        {
+            throw GraphQlError("Gateway authentication failed.", "FORBIDDEN");
+        }
+    }
+
+    private static bool FixedTimeEquals(string expected, string provided)
+    {
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        var providedBytes = Encoding.UTF8.GetBytes(provided);
+
+        return expectedBytes.Length == providedBytes.Length &&
+               CryptographicOperations.FixedTimeEquals(expectedBytes, providedBytes);
+    }
+
+    private static GatewaySessionValidationPayload InvalidGatewaySession(long userId, long sessionId) =>
+        new(false, userId, sessionId, null, null, null);
 
     private static void ValidatePassword(string password)
     {
@@ -1287,8 +1397,9 @@ public sealed class AuthService(
 
     private GatewayCookieInstruction CreateSetRefreshTokenCookie(
         string refreshToken,
-        DateTimeOffset expiresAt) =>
-        new(
+        DateTimeOffset expiresAt)
+    {
+        var instruction = new GatewayCookieInstruction(
             "SET",
             _authOptions.RefreshTokenCookieName,
             refreshToken,
@@ -1298,9 +1409,13 @@ public sealed class AuthService(
             _authOptions.RefreshTokenCookieSecure,
             _authOptions.RefreshTokenCookieMaxAgeSeconds,
             expiresAt);
+        WriteGatewayCookieInstructionHeader(instruction);
+        return instruction;
+    }
 
-    private GatewayCookieInstruction CreateClearRefreshTokenCookie() =>
-        new(
+    private GatewayCookieInstruction CreateClearRefreshTokenCookie()
+    {
+        var instruction = new GatewayCookieInstruction(
             "CLEAR",
             _authOptions.RefreshTokenCookieName,
             string.Empty,
@@ -1310,6 +1425,22 @@ public sealed class AuthService(
             _authOptions.RefreshTokenCookieSecure,
             0,
             DateTimeOffset.UnixEpoch);
+        WriteGatewayCookieInstructionHeader(instruction);
+        return instruction;
+    }
+
+    private void WriteGatewayCookieInstructionHeader(GatewayCookieInstruction instruction)
+    {
+        var response = httpContextAccessor.HttpContext?.Response;
+        if (response is null || response.HasStarted)
+        {
+            return;
+        }
+
+        var json = JsonSerializer.Serialize(instruction, JsonOptions);
+        response.Headers[GatewayCookieInstructionHeaderName] =
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
+    }
 
     private sealed record NormalizedRegisterInput(
         string DisplayName,

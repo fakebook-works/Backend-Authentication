@@ -72,6 +72,7 @@ Auth__RefreshTokenCookiePath
 Auth__RefreshTokenCookieSameSite
 Auth__RefreshTokenCookieHttpOnly
 Auth__RefreshTokenCookieSecure
+Gateway__InternalSharedSecret
 Smtp__Enabled
 Smtp__Host
 Smtp__Port
@@ -231,9 +232,13 @@ X-User-Id
 X-Session-Id
 X-Username
 X-Correlation-ID
+X-Refresh-Token
+X-Gateway-Secret
+X-Fakebook-Refresh-Cookie-Instruction
 ```
 
 Do not let browsers set trusted identity headers directly. Strip these headers at the public edge and regenerate them inside the Gateway.
+`X-Refresh-Token`, `X-Gateway-Secret`, and `X-Fakebook-Refresh-Cookie-Instruction` are internal-only headers. Browsers must not be allowed to set them.
 
 Recommended Gateway cookie flow:
 
@@ -305,6 +310,14 @@ For `CLEAR`:
 - `value` is empty string.
 - `maxAgeSeconds` is `0`.
 - `expiresAt` is Unix epoch.
+
+Auth also writes the same cookie instruction as base64 JSON in the internal HTTP response header:
+
+```text
+X-Fakebook-Refresh-Cookie-Instruction
+```
+
+The Gateway should consume this header, set or clear the real browser cookie, and avoid forwarding the internal header to public clients. This lets Gateway-owned cookies work even when the frontend does not select `refreshTokenCookie` in the GraphQL response.
 
 ## GraphQL Queries
 
@@ -400,6 +413,36 @@ query MySessionHistory {
   }
 }
 ```
+
+### validateGatewaySession
+
+Internal Gateway-only session validation.
+
+Requires:
+
+```text
+X-Gateway-Secret: <Gateway__InternalSharedSecret>
+```
+
+```graphql
+query ValidateGatewaySession($input: GatewaySessionValidationInput!) {
+  validateGatewaySession(input: $input) {
+    isValid
+    userId
+    sessionId
+    username
+    status
+    expiresAt
+  }
+}
+```
+
+Notes:
+
+- This field is for Gateway-to-Auth traffic only.
+- The Gateway should mark this field `@internal` in Fusion source schema extensions so it is not exposed publicly.
+- Returns `isValid = false` when the user is missing, not active, or the session is revoked/expired.
+- Missing or invalid `X-Gateway-Secret` returns a GraphQL error with code `FORBIDDEN`.
 
 ## GraphQL Mutations
 
@@ -592,6 +635,7 @@ Variables:
 Notes:
 
 - Accepts raw refresh token.
+- Gateway callers may omit `input.refreshToken` when they send the raw token through internal `X-Refresh-Token`.
 - Hashes token and searches active session.
 - Rotates token on every successful refresh.
 - Writes previous token hash to token history with `replaced_at`.
@@ -631,6 +675,7 @@ Variables:
 Notes:
 
 - If token is active, revokes its session with reason `LOGOUT`.
+- Gateway callers may omit `input.refreshToken` when they send the raw token through internal `X-Refresh-Token`.
 - Always returns success.
 - Returns cookie `CLEAR` instruction.
 
@@ -847,6 +892,20 @@ type SessionType {
   revokedAt: DateTime
   isCurrent: Boolean!
 }
+
+input GatewaySessionValidationInput {
+  userId: Long!
+  sessionId: Long!
+}
+
+type GatewaySessionValidationPayload {
+  isValid: Boolean!
+  userId: Long
+  sessionId: Long
+  username: String
+  status: Short
+  expiresAt: DateTime
+}
 ```
 
 HotChocolate may expose numeric .NET scalar names depending on schema generation. Query the live schema if exact scalar names matter to a Gateway implementation.
@@ -1046,7 +1105,6 @@ http://localhost:<port>/graphql
 
 - Add permanent automated test project.
 - Add proper migration system if the project grows beyond manual `schema.sql` updates.
-- Add a dedicated token/session introspection query for Gateway if Gateway needs centralized active-session checks.
 - Export/compose federation schema once the Gateway project is ready.
 - Consider adding roles/permissions and MFA when product requirements exist.
 - Add `appsettings.example.json` and remove real secrets from tracked files.

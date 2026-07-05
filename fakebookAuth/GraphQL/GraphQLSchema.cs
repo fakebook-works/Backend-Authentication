@@ -20,8 +20,15 @@ public sealed class Query
         [Service] IAuthService authService,
         CancellationToken cancellationToken) =>
         authService.MySessionHistoryAsync(cancellationToken);
+
+    public Task<GatewaySessionValidationPayload> ValidateGatewaySession(
+        GatewaySessionValidationInput input,
+        [Service] IAuthService authService,
+        CancellationToken cancellationToken) =>
+        authService.ValidateGatewaySessionAsync(input, cancellationToken);
 }
 
+[GraphQLName("Mutation")]
 public sealed class AuthMutations
 {
     public Task<RegisterPayload> Register(
@@ -43,13 +50,13 @@ public sealed class AuthMutations
         authService.LoginAsync(input, cancellationToken);
 
     public Task<LoginPayload> RefreshToken(
-        RefreshTokenInput input,
+        RefreshTokenInput? input,
         [Service] IAuthService authService,
         CancellationToken cancellationToken) =>
         authService.RefreshTokenAsync(input, cancellationToken);
 
     public Task<AuthActionPayload> Logout(
-        LogoutInput input,
+        LogoutInput? input,
         [Service] IAuthService authService,
         CancellationToken cancellationToken) =>
         authService.LogoutAsync(input, cancellationToken);
