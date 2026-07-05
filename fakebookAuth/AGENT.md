@@ -928,6 +928,7 @@ ACCOUNT_NOT_FOUND
 ACCOUNT_UNAVAILABLE
 EMAIL_UNVERIFIED
 UNAUTHENTICATED
+FORBIDDEN
 ```
 
 OTP and verification:
@@ -1067,8 +1068,10 @@ Recent manual/E2E checks covered:
 - login rate limit
 - OTP resend limit
 - cookie instruction contract
+- internal `validateGatewaySession` contract
 - revoked access token rejection
 - multi-device session behavior
+- Gateway proxy login/refresh/logout cookie behavior
 
 There is no permanent test project yet. Future improvement: create `fakebookAuth.Tests` and move temporary E2E runner logic into `dotnet test`.
 
@@ -1105,6 +1108,6 @@ http://localhost:<port>/graphql
 
 - Add permanent automated test project.
 - Add proper migration system if the project grows beyond manual `schema.sql` updates.
-- Export/compose federation schema once the Gateway project is ready.
+- Keep exported federation schema and Gateway composition artifacts in sync when the Auth schema changes.
 - Consider adding roles/permissions and MFA when product requirements exist.
 - Add `appsettings.example.json` and remove real secrets from tracked files.

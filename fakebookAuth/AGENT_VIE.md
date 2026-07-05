@@ -72,6 +72,7 @@ Auth__RefreshTokenCookiePath
 Auth__RefreshTokenCookieSameSite
 Auth__RefreshTokenCookieHttpOnly
 Auth__RefreshTokenCookieSecure
+Gateway__InternalSharedSecret
 Smtp__Enabled
 Smtp__Host
 Smtp__Port
@@ -231,9 +232,13 @@ X-User-Id
 X-Session-Id
 X-Username
 X-Correlation-ID
+X-Refresh-Token
+X-Gateway-Secret
+X-Fakebook-Refresh-Cookie-Instruction
 ```
 
 Không cho browser tự set các identity header này. Gateway phải strip header từ public request rồi tự tạo lại ở internal request.
+`X-Refresh-Token`, `X-Gateway-Secret` và `X-Fakebook-Refresh-Cookie-Instruction` là header nội bộ. Browser không được phép tự gửi các header này.
 
 Flow cookie đề xuất cho Gateway:
 
@@ -305,6 +310,14 @@ Với `CLEAR`:
 - `value` là chuỗi rỗng.
 - `maxAgeSeconds` là `0`.
 - `expiresAt` là Unix epoch.
+
+Auth cũng ghi cùng cookie instruction dưới dạng base64 JSON vào HTTP response header nội bộ:
+
+```text
+X-Fakebook-Refresh-Cookie-Instruction
+```
+
+Gateway nên consume header này, set hoặc clear cookie thật trên browser, và không forward header nội bộ này về public client. Cơ chế này giúp Gateway vẫn quản lý cookie đúng ngay cả khi frontend không select `refreshTokenCookie` trong GraphQL response.
 
 ## GraphQL Queries
 
@@ -400,6 +413,36 @@ query MySessionHistory {
   }
 }
 ```
+
+### validateGatewaySession
+
+Validate session nội bộ, chỉ dành cho Gateway gọi Auth.
+
+Yêu cầu:
+
+```text
+X-Gateway-Secret: <Gateway__InternalSharedSecret>
+```
+
+```graphql
+query ValidateGatewaySession($input: GatewaySessionValidationInput!) {
+  validateGatewaySession(input: $input) {
+    isValid
+    userId
+    sessionId
+    username
+    status
+    expiresAt
+  }
+}
+```
+
+Lưu ý:
+
+- Field này chỉ dùng cho traffic Gateway -> Auth.
+- Gateway nên mark field này là `@internal` trong Fusion source schema extensions để không expose public.
+- Trả `isValid = false` nếu user không tồn tại, user không active, hoặc session đã revoke/expired.
+- Thiếu hoặc sai `X-Gateway-Secret` sẽ trả GraphQL error code `FORBIDDEN`.
 
 ## GraphQL Mutations
 
@@ -592,6 +635,7 @@ Variables:
 Lưu ý:
 
 - Nhận raw refresh token.
+- Gateway có thể bỏ `input.refreshToken` nếu gửi raw token qua header nội bộ `X-Refresh-Token`.
 - Hash token rồi tìm active session.
 - Thành công thì rotate token ngay.
 - Ghi token cũ vào token history với `replaced_at`.
@@ -631,6 +675,7 @@ Variables:
 Lưu ý:
 
 - Nếu token active, revoke session với reason `LOGOUT`.
+- Gateway có thể bỏ `input.refreshToken` nếu gửi raw token qua header nội bộ `X-Refresh-Token`.
 - Luôn trả success.
 - Trả cookie instruction `CLEAR`.
 
@@ -847,6 +892,20 @@ type SessionType {
   revokedAt: DateTime
   isCurrent: Boolean!
 }
+
+input GatewaySessionValidationInput {
+  userId: Long!
+  sessionId: Long!
+}
+
+type GatewaySessionValidationPayload {
+  isValid: Boolean!
+  userId: Long
+  sessionId: Long
+  username: String
+  status: Short
+  expiresAt: DateTime
+}
 ```
 
 HotChocolate có thể expose tên scalar .NET khác nhau tùy schema generation. Nếu Gateway cần exact scalar name, hãy introspect live schema.
@@ -869,6 +928,7 @@ ACCOUNT_NOT_FOUND
 ACCOUNT_UNAVAILABLE
 EMAIL_UNVERIFIED
 UNAUTHENTICATED
+FORBIDDEN
 ```
 
 OTP và verification:
@@ -1008,8 +1068,10 @@ Các E2E/manual check gần đây đã cover:
 - login rate limit
 - OTP resend limit
 - cookie instruction contract
+- internal `validateGatewaySession` contract
 - reject access token của session đã revoke
 - multi-device session behavior
+- Gateway proxy login/refresh/logout cookie behavior
 
 Hiện chưa có test project cố định. Nên tạo `fakebookAuth.Tests` và chuyển logic E2E tạm sang `dotnet test`.
 
@@ -1046,7 +1108,6 @@ http://localhost:<port>/graphql
 
 - Tạo test project cố định.
 - Thêm migration system chính thức nếu project phát triển thêm.
-- Thêm query introspection/token introspection riêng cho Gateway nếu Gateway cần active-session check tập trung.
-- Export/compose federation schema khi Gateway project sẵn sàng.
+- Giữ exported federation schema và Gateway composition artifacts đồng bộ khi Auth schema thay đổi.
 - Thêm roles/permissions và MFA khi có requirement sản phẩm.
 - Thêm `appsettings.example.json` và loại bỏ real secrets khỏi các file tracked.
