@@ -1,6 +1,6 @@
 # Fakebook Authentication Subgraph
 
-Authentication and identity subgraph for Fakebook. This service owns user registration, email verification, login, refresh token rotation, session management, password reset, password change, OTP limits, and authentication audit events.
+Authentication and identity subgraph for Fakebook. This service owns credentials and identity creation, email verification, login, refresh token rotation, session management, password reset, password change, OTP limits, and authentication audit events. SocialGraph orchestrates the normal public registration flow and owns the canonical user ID.
 
 It is designed to run behind a GraphQL Federation Gateway. The Gateway should be the public entry point, while this subgraph remains responsible for credentials, sessions, JWT issuing, refresh token validation, and cookie instructions.
 
@@ -225,9 +225,14 @@ Recommended flow:
 
 ```text
 Registration:
-  Frontend -> Gateway -> Auth register
-  Auth generates the userId and creates the unverified identity with gender
-  Auth stores the password hash and creates the email verification OTP
+  Frontend -> Gateway createUser -> SocialGraph
+  SocialGraph generates canonical userId and calls Auth POST /internal/users
+  Auth creates the unverified identity with gender, password credential, and verification OTP
+  SocialGraph rolls back its user object if the required Auth call fails
+  After Auth succeeds, SocialGraph concurrently provisions:
+    Search PUT /internal/search/indexes/{userId}
+    Recommendation PUT /internal/recommendation/users/{userId}/embedding
+  Those derived projections are idempotent and best-effort
   Frontend verifies the OTP before login
 
 Login:

@@ -1053,14 +1053,18 @@ Ví dụ:
 ## Quy Trình Đăng Ký Chuẩn
 
 ```text
-1. Client gửi displayName, dob, gender, email, username và password tới Gateway register.
-2. Gateway route register sang Authentication subgraph qua Fusion.
-3. Auth sinh canonical Snowflake userId.
-4. Auth tạo identity unverified, lưu boolean gender và password hash.
-5. Auth tạo verification OTP hash và gửi email nếu SMTP enabled.
-6. Client gửi identifier + OTP qua Gateway verifyEmail.
-7. Auth activate account.
-8. Client có thể login.
+1. Client gửi name, gender, birthdate, location, email và password tới Gateway createUser.
+2. Gateway route createUser sang SocialGraph qua Fusion.
+3. SocialGraph tạo profile object và canonical Snowflake userId.
+4. SocialGraph gọi Auth POST /internal/users với userId đó và X-Gateway-Secret.
+5. Auth tạo identity unverified bằng đúng userId được truyền, lưu boolean gender và password hash.
+6. Auth tạo verification OTP hash và gửi email nếu SMTP enabled.
+7. Nếu Auth lỗi, SocialGraph xóa profile object vừa tạo và trả CreateUserPayload thất bại.
+8. Nếu Auth thành công, SocialGraph gọi đồng thời Search `PUT /internal/search/indexes/{userId}` và Recommendation `PUT /internal/recommendation/users/{userId}/embedding` bằng cùng ID/correlation ID.
+9. Search và Recommendation idempotent, best-effort; lỗi projection không rollback identity mà Auth đã chấp nhận.
+10. Client gửi identifier + OTP qua Gateway verifyEmail.
+11. Auth activate account.
+12. Client có thể login.
 ```
 
 ## Quy Trình Login/Refresh Với Gateway

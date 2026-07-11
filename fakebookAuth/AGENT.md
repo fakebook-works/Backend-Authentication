@@ -1053,14 +1053,18 @@ Examples:
 ## Expected Registration Flow
 
 ```text
-1. Client submits displayName, dob, gender, email, username, and password to Gateway register.
-2. Gateway routes register to the Authentication subgraph through Fusion.
-3. Auth generates the canonical Snowflake userId.
-4. Auth creates the unverified identity, including the boolean gender value, and stores the password hash.
-5. Auth creates the verification OTP hash and sends email when SMTP is enabled.
-6. Client submits identifier + OTP through Gateway verifyEmail.
-7. Auth activates the account.
-8. Client can now log in.
+1. Client submits name, gender, birthdate, location, email, and password to Gateway createUser.
+2. Gateway routes createUser to SocialGraph through Fusion.
+3. SocialGraph creates the profile object and canonical Snowflake userId.
+4. SocialGraph calls Auth POST /internal/users with that userId and X-Gateway-Secret.
+5. Auth creates the unverified identity with the supplied userId, stores the boolean gender value, and stores the password hash.
+6. Auth creates the verification OTP hash and sends email when SMTP is enabled.
+7. If Auth fails, SocialGraph deletes the new profile object and returns a failed CreateUserPayload.
+8. If Auth succeeds, SocialGraph concurrently calls Search `PUT /internal/search/indexes/{userId}` and Recommendation `PUT /internal/recommendation/users/{userId}/embedding` with the same ID/correlation ID.
+9. Search and Recommendation provisioning are idempotent and best-effort; failure does not roll back the accepted Auth identity.
+10. Client submits identifier + OTP through Gateway verifyEmail.
+11. Auth activates the account.
+12. Client can now log in.
 ```
 
 ## Expected Login/Refresh Flow With Gateway
