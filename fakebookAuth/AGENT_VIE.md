@@ -444,11 +444,45 @@ Lưu ý:
 - Trả `isValid = false` nếu user không tồn tại, user không active, hoặc session đã revoke/expired.
 - Thiếu hoặc sai `X-Gateway-Secret` sẽ trả GraphQL error code `FORBIDDEN`.
 
+## Internal REST APIs
+
+### POST /internal/users
+
+API nội bộ để SocialGraph tạo identity trong Auth bằng canonical user id do SocialGraph sinh ra.
+
+Yêu cầu:
+
+```text
+X-Gateway-Secret: <Gateway__InternalSharedSecret>
+```
+
+Payload:
+
+```json
+{
+  "userId": 1234567890123456789,
+  "email": "a@example.com",
+  "password": "at-least-8-chars",
+  "displayName": "Nguyen Van A",
+  "dob": "2000-01-01"
+}
+```
+
+Hành vi:
+
+- Tạo `id_user` với đúng `userId` được truyền vào.
+- Tạo password credential và OTP verify email.
+- Giữ account ở trạng thái `unverified` cho đến khi gọi `verifyEmail`.
+- Nếu không truyền username, Auth tự sinh username nội bộ từ phần trước `@` của email cộng với `userId`.
+- Thiếu hoặc sai `X-Gateway-Secret` sẽ bị reject.
+
 ## GraphQL Mutations
 
 ### register
 
-Tạo account mới ở trạng thái unverified và tạo OTP verify email.
+Đây là mutation đăng ký legacy/direct-subgraph. Gateway hiện mark mutation này `@internal`; frontend đăng ký bình thường phải dùng SocialGraph `createUser` qua Gateway. Mutation được giữ lại để tương thích ngược và test Auth độc lập.
+
+Mutation tạo account unverified với ID do Auth tự sinh và tạo OTP verify email.
 
 ```graphql
 mutation Register($input: RegisterInput!) {
@@ -1002,16 +1036,17 @@ Ví dụ:
 ## Quy Trình Đăng Ký Chuẩn
 
 ```text
-1. Client gửi displayName, dob, email, username, password tới Gateway.
-2. Gateway gọi Auth register.
-3. Auth tạo user với status unverified.
-4. Auth lưu password hash.
-5. Auth tạo verification OTP hash.
-6. Auth gửi OTP email nếu SMTP enabled.
-7. Client gửi identifier + OTP.
-8. Gateway gọi Auth verifyEmail.
-9. Auth activate account.
-10. Client có thể login.
+1. Client gửi name, gender, birthdate, location, email và password tới Gateway createUser.
+2. Gateway route createUser sang SocialGraph qua Fusion.
+3. SocialGraph tạo profile object và canonical Snowflake userId.
+4. SocialGraph gọi Auth POST /internal/users với userId đó và X-Gateway-Secret.
+5. Auth tạo identity unverified bằng đúng userId được truyền và lưu password hash.
+6. Auth tạo verification OTP hash và gửi email nếu SMTP enabled.
+7. Nếu Auth lỗi, SocialGraph xóa profile object vừa tạo và trả CreateUserPayload thất bại.
+8. Nếu Auth thành công, SocialGraph provision Search/Recommendation theo best-effort rồi trả userId.
+9. Client gửi identifier + OTP qua Gateway verifyEmail.
+10. Auth activate account.
+11. Client có thể login.
 ```
 
 ## Quy Trình Login/Refresh Với Gateway
@@ -1052,7 +1087,8 @@ logoutSession:
 
 Các E2E/manual check gần đây đã cover:
 
-- register + verify email
+- legacy direct register + verify email
+- internal create bằng custom userId cho SocialGraph
 - login
 - refresh token rotation
 - refresh token reuse detection

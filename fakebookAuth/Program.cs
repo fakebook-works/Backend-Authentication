@@ -73,6 +73,7 @@ public static class Program
 
         builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
         builder.Services.AddHttpContextAccessor();
+        builder.Services.AddControllers();
 
         builder.Services.AddSingleton<ISnowflakeIdGenerator, SnowflakeIdGenerator>();
         builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
@@ -116,6 +117,7 @@ public static class Program
         });
 
         app.MapGraphQL();
+        app.MapControllers();
         app.MapGet("/", () => Results.Redirect("/graphql"));
 
         app.RunWithGraphQLCommands(args);

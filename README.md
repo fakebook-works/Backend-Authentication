@@ -31,7 +31,8 @@ fakebookAuth/
 
 ## Core Features
 
-- Register account with email verification OTP
+- Direct/legacy Auth registration with email verification OTP
+- Create an unverified identity with a caller-supplied canonical SocialGraph user ID
 - Resend email verification code with cooldown and rate limiting
 - Login with username/email and password
 - Short-lived JWT access tokens
@@ -76,6 +77,7 @@ Auth__OtpResendLimit
 Auth__LoginFailureLimit
 Auth__RefreshTokenCookieName
 Auth__RefreshTokenCookieSameSite
+Gateway__InternalSharedSecret
 Smtp__Enabled
 Smtp__Host
 Smtp__Port
@@ -174,11 +176,36 @@ resetPassword(input: ResetPasswordInput!): AuthActionPayload!
 changePassword(input: ChangePasswordInput!): AuthActionPayload!
 ```
 
+`register` remains in the Authentication subgraph for direct/backward-compatible use. The current Gateway marks it `@internal`; normal frontend registration must call SocialGraph `createUser` through the Gateway.
+
 Protected operations require:
 
 ```text
 Authorization: Bearer <accessToken>
 ```
+
+## Internal Service API
+
+SocialGraph creates the canonical Fakebook user id first, then calls Authentication to create the identity row with that exact id.
+
+```http
+POST /internal/users
+X-Gateway-Secret: <Gateway__InternalSharedSecret>
+```
+
+Body:
+
+```json
+{
+  "userId": 1234567890123456789,
+  "email": "a@example.com",
+  "password": "at-least-8-chars",
+  "displayName": "Nguyen Van A",
+  "dob": "2000-01-01"
+}
+```
+
+This endpoint creates an unverified user, password credential, and email verification OTP using the supplied `userId`. It is internal-only and rejects calls without the shared secret.
 
 ## Gateway Integration
 
@@ -187,6 +214,12 @@ The Gateway should set and clear browser cookies. This subgraph returns a `refre
 Recommended flow:
 
 ```text
+Registration:
+  Frontend -> Gateway createUser -> SocialGraph
+  SocialGraph generates canonical userId and calls Auth POST /internal/users
+  Auth creates the unverified identity, password credential, and verification OTP
+  SocialGraph rolls back its user object if the required Auth call fails
+
 Login:
   Frontend -> Gateway -> Auth login
   Auth returns accessToken + refresh token cookie instruction

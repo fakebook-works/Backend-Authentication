@@ -9,6 +9,7 @@ namespace fakebookAuth;
 public interface IAuthService
 {
     Task<RegisterPayload> RegisterAsync(RegisterInput input, CancellationToken cancellationToken);
+    Task<AuthActionPayload> CreateUserIdentityAsync(CreateUserIdentityInput input, CancellationToken cancellationToken);
     Task<VerifyEmailPayload> VerifyEmailAsync(VerifyEmailInput input, CancellationToken cancellationToken);
     Task<LoginPayload> LoginAsync(LoginInput input, CancellationToken cancellationToken);
     Task<LoginPayload> RefreshTokenAsync(RefreshTokenInput? input, CancellationToken cancellationToken);
@@ -57,9 +58,34 @@ public sealed class AuthService(
     public async Task<RegisterPayload> RegisterAsync(RegisterInput input, CancellationToken cancellationToken)
     {
         var register = NormalizeAndValidate(input);
+        var message = await CreateUnverifiedUserAsync(ids.NewId(), register, cancellationToken);
+        return new RegisterPayload(true, message);
+    }
 
+    public async Task<AuthActionPayload> CreateUserIdentityAsync(
+        CreateUserIdentityInput input,
+        CancellationToken cancellationToken)
+    {
+        EnsureGatewaySecret();
+
+        if (input.UserId <= 0)
+        {
+            throw GraphQlError("User id is invalid.", "INVALID_USER_ID");
+        }
+
+        var register = NormalizeAndValidate(input);
+        var message = await CreateUnverifiedUserAsync(input.UserId, register, cancellationToken);
+        return new AuthActionPayload(true, message);
+    }
+
+    private async Task<string> CreateUnverifiedUserAsync(
+        long userId,
+        NormalizedRegisterInput register,
+        CancellationToken cancellationToken)
+    {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        string otp;
 
         try
         {
@@ -73,7 +99,6 @@ public sealed class AuthService(
                 throw GraphQlError("Email or username already exists.", "IDENTIFIER_EXISTS");
             }
 
-            var userId = ids.NewId();
             await users.InsertAsync(
                 connection,
                 transaction,
@@ -96,7 +121,7 @@ public sealed class AuthService(
                 passwordHasher.Hash(register.Password),
                 cancellationToken);
 
-            var otp = OtpGenerator.SixDigitCode();
+            otp = OtpGenerator.SixDigitCode();
             await verifications.InsertEmailVerificationAsync(
                 connection,
                 transaction,
@@ -107,19 +132,6 @@ public sealed class AuthService(
                 cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
-
-            if (_smtpOptions.Enabled)
-            {
-                await emailSender.SendVerificationOtpAsync(
-                    register.Email,
-                    register.DisplayName,
-                    otp,
-                    cancellationToken);
-
-                return new RegisterPayload(true, "Registration successful. Please check your email for the verification code.");
-            }
-
-            return new RegisterPayload(true, "Registration successful. Email delivery is disabled; verify manually before signing in.");
         }
         catch (GraphQLException)
         {
@@ -135,6 +147,31 @@ public sealed class AuthService(
         {
             await RollbackQuietlyAsync(transaction, cancellationToken);
             throw;
+        }
+
+        if (!_smtpOptions.Enabled)
+        {
+            return "Registration successful. Email delivery is disabled; verify manually before signing in.";
+        }
+
+        try
+        {
+            await emailSender.SendVerificationOtpAsync(
+                register.Email,
+                register.DisplayName,
+                otp,
+                cancellationToken);
+
+            return "Registration successful. Please check your email for the verification code.";
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Verification email could not be sent for user {UserId}.",
+                userId);
+
+            return "Registration successful, but the verification email could not be sent. Please request a new verification code.";
         }
     }
 
@@ -1109,7 +1146,61 @@ public sealed class AuthService(
         return new NormalizedRegisterInput(displayName, input.Dob, email, username, input.Password);
     }
 
+    private static NormalizedRegisterInput NormalizeAndValidate(CreateUserIdentityInput input)
+    {
+        var email = NormalizeIdentifier(input.Email);
+        var username = string.IsNullOrWhiteSpace(input.Username)
+            ? BuildInternalUsername(email, input.UserId)
+            : NormalizeIdentifier(input.Username);
+        var displayName = input.DisplayName.Trim();
+
+        if (string.IsNullOrWhiteSpace(displayName))
+        {
+            throw GraphQlError("Display name is required.", "INVALID_DISPLAY_NAME");
+        }
+
+        if (!new EmailAddressAttribute().IsValid(email))
+        {
+            throw GraphQlError("Email is invalid.", "INVALID_EMAIL");
+        }
+
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            throw GraphQlError("Username is required.", "INVALID_USERNAME");
+        }
+
+        ValidatePassword(input.Password);
+
+        if (input.Dob > DateOnly.FromDateTime(DateTime.UtcNow))
+        {
+            throw GraphQlError("Date of birth is invalid.", "INVALID_DOB");
+        }
+
+        return new NormalizedRegisterInput(displayName, input.Dob, email, username, input.Password);
+    }
+
     private static string NormalizeIdentifier(string value) => value.Trim().ToLowerInvariant();
+
+    private static string BuildInternalUsername(string email, long userId)
+    {
+        var localPart = email.Split('@', 2)[0];
+        var builder = new StringBuilder(localPart.Length);
+
+        foreach (var character in localPart)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                builder.Append(char.ToLowerInvariant(character));
+            }
+            else if (character is '.' or '_' or '-')
+            {
+                builder.Append(character);
+            }
+        }
+
+        var prefix = builder.Length == 0 ? "user" : builder.ToString();
+        return $"{prefix}_{userId}";
+    }
 
     private string ResolveRefreshToken(string? value, bool allowMissing = false)
     {

@@ -12,6 +12,15 @@ public sealed record RegisterInput(
 
 public sealed record RegisterPayload(bool Success, string? Message);
 
+public sealed record CreateUserIdentityInput(
+    long UserId,
+    string Email,
+    string Password,
+    string DisplayName,
+    [property: GraphQLType(typeof(DateType))]
+    DateOnly Dob,
+    string? Username = null);
+
 public sealed record VerifyEmailInput(string Identifier, string Otp);
 
 public sealed record VerifyEmailPayload(bool Success, string? Message);

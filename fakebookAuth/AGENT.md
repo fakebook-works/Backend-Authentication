@@ -444,11 +444,45 @@ Notes:
 - Returns `isValid = false` when the user is missing, not active, or the session is revoked/expired.
 - Missing or invalid `X-Gateway-Secret` returns a GraphQL error with code `FORBIDDEN`.
 
+## Internal REST APIs
+
+### POST /internal/users
+
+Internal SocialGraph-to-Auth identity creation. SocialGraph owns the canonical user id and sends it here.
+
+Requires:
+
+```text
+X-Gateway-Secret: <Gateway__InternalSharedSecret>
+```
+
+Payload:
+
+```json
+{
+  "userId": 1234567890123456789,
+  "email": "a@example.com",
+  "password": "at-least-8-chars",
+  "displayName": "Nguyen Van A",
+  "dob": "2000-01-01"
+}
+```
+
+Behavior:
+
+- Creates `id_user` with the supplied `userId`.
+- Creates password credential and email verification OTP.
+- Keeps the account `unverified` until `verifyEmail`.
+- Generates an internal username from email local-part plus `userId` when no username is supplied.
+- Rejects missing or invalid `X-Gateway-Secret`.
+
 ## GraphQL Mutations
 
 ### register
 
-Creates an unverified account and creates an email verification OTP.
+Legacy/direct-subgraph registration. The current Gateway marks this mutation `@internal`; normal frontend registration must use SocialGraph `createUser` through the Gateway. This mutation remains available for backward compatibility and isolated Auth testing.
+
+Creates an unverified account with an Auth-generated ID and creates an email verification OTP.
 
 ```graphql
 mutation Register($input: RegisterInput!) {
@@ -1002,16 +1036,17 @@ Examples:
 ## Expected Registration Flow
 
 ```text
-1. Client submits displayName, dob, email, username, password to Gateway.
-2. Gateway calls Auth register.
-3. Auth creates user with status unverified.
-4. Auth stores password hash.
-5. Auth creates verification OTP hash.
-6. Auth sends OTP email when SMTP is enabled.
-7. Client submits identifier + OTP.
-8. Gateway calls Auth verifyEmail.
-9. Auth activates account.
-10. Client can now log in.
+1. Client submits name, gender, birthdate, location, email, and password to Gateway createUser.
+2. Gateway routes createUser to SocialGraph through Fusion.
+3. SocialGraph creates the profile object and canonical Snowflake userId.
+4. SocialGraph calls Auth POST /internal/users with that userId and X-Gateway-Secret.
+5. Auth creates the unverified identity with the supplied userId and stores the password hash.
+6. Auth creates the verification OTP hash and sends email when SMTP is enabled.
+7. If Auth fails, SocialGraph deletes the new profile object and returns a failed CreateUserPayload.
+8. If Auth succeeds, SocialGraph runs Search/Recommendation provisioning best-effort and returns the userId.
+9. Client submits identifier + OTP through Gateway verifyEmail.
+10. Auth activates the account.
+11. Client can now log in.
 ```
 
 ## Expected Login/Refresh Flow With Gateway
@@ -1052,7 +1087,8 @@ logoutSession:
 
 Recent manual/E2E checks covered:
 
-- register + verify email
+- legacy direct register + verify email
+- internal custom-userId creation used by SocialGraph
 - login
 - refresh token rotation
 - refresh token reuse detection
