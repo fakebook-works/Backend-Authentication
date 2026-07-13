@@ -249,6 +249,17 @@ public static class TokenHashing
     }
 }
 
+public static class InternalSecretComparer
+{
+    public static bool FixedTimeEquals(string expected, string provided)
+    {
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        var providedBytes = Encoding.UTF8.GetBytes(provided);
+        return expectedBytes.Length == providedBytes.Length &&
+               CryptographicOperations.FixedTimeEquals(expectedBytes, providedBytes);
+    }
+}
+
 public static class OtpGenerator
 {
     public static string SixDigitCode() =>

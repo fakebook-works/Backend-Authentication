@@ -12,6 +12,8 @@ CREATE TABLE id_user (
                          username         text UNIQUE,
                          dob              date,
                          display_name     text,
+                         gender           boolean,
+                         valid_date       timestamptz,
                          status           smallint NOT NULL DEFAULT 4, -- 1=active, 2=disabled, 3=deleted, 4=unverified
                          created_at       timestamptz NOT NULL DEFAULT now(),
                          updated_at       timestamptz NOT NULL DEFAULT now()

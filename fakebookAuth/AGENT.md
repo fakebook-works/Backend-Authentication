@@ -73,6 +73,7 @@ Auth__RefreshTokenCookieSameSite
 Auth__RefreshTokenCookieHttpOnly
 Auth__RefreshTokenCookieSecure
 Gateway__InternalSharedSecret
+Payment__InternalSharedSecret
 Smtp__Enabled
 Smtp__Host
 Smtp__Port
@@ -359,6 +360,7 @@ query Me {
     username
     dob
     displayName
+    gender
     status
   }
 }
@@ -464,7 +466,8 @@ Payload:
   "email": "a@example.com",
   "password": "at-least-8-chars",
   "displayName": "Nguyen Van A",
-  "dob": "2000-01-01"
+  "dob": "2000-01-01",
+  "gender": true
 }
 ```
 
@@ -480,7 +483,7 @@ Behavior:
 
 ### register
 
-Legacy/direct-subgraph registration. The current Gateway marks this mutation `@internal`; normal frontend registration must use SocialGraph `createUser` through the Gateway. This mutation remains available for backward compatibility and isolated Auth testing.
+Public registration mutation used by the frontend through the Gateway.
 
 Creates an unverified account with an Auth-generated ID and creates an email verification OTP.
 
@@ -501,6 +504,7 @@ Variables:
     "displayName": "Quan Trieu",
     "dob": "2000-01-01",
     "email": "quan@example.com",
+    "gender": true,
     "username": "quantrieu",
     "password": "Password123!"
   }
@@ -510,6 +514,7 @@ Variables:
 Notes:
 
 - Email and username are normalized to lower-case.
+- Gender is required: `true` means Male and `false` means Female.
 - Password minimum length is 8.
 - New users start with `status = 4` (unverified).
 - If SMTP is enabled, OTP is emailed.
@@ -602,6 +607,7 @@ mutation Login($input: LoginInput!) {
       email
       username
       displayName
+      gender
       status
     }
   }
@@ -651,6 +657,7 @@ mutation RefreshToken($input: RefreshTokenInput!) {
       userId
       email
       username
+      gender
     }
   }
 }
@@ -910,7 +917,17 @@ type UserType {
   username: String!
   dob: Date
   displayName: String!
+  gender: Boolean
   status: Short!
+}
+
+input RegisterInput {
+  displayName: String!
+  dob: Date
+  email: String!
+  gender: Boolean!
+  username: String!
+  password: String!
 }
 
 type SessionType {
@@ -1036,17 +1053,14 @@ Examples:
 ## Expected Registration Flow
 
 ```text
-1. Client submits name, gender, birthdate, location, email, and password to Gateway createUser.
-2. Gateway routes createUser to SocialGraph through Fusion.
-3. SocialGraph creates the profile object and canonical Snowflake userId.
-4. SocialGraph calls Auth POST /internal/users with that userId and X-Gateway-Secret.
-5. Auth creates the unverified identity with the supplied userId and stores the password hash.
-6. Auth creates the verification OTP hash and sends email when SMTP is enabled.
-7. If Auth fails, SocialGraph deletes the new profile object and returns a failed CreateUserPayload.
-8. If Auth succeeds, SocialGraph runs Search/Recommendation provisioning best-effort and returns the userId.
-9. Client submits identifier + OTP through Gateway verifyEmail.
-10. Auth activates the account.
-11. Client can now log in.
+1. Client submits displayName, dob, gender, email, username, and password to Gateway register.
+2. Gateway routes register to the Authentication subgraph through Fusion.
+3. Auth generates the canonical Snowflake userId.
+4. Auth creates the unverified identity, including the boolean gender value, and stores the password hash.
+5. Auth creates the verification OTP hash and sends email when SMTP is enabled.
+6. Client submits identifier + OTP through Gateway verifyEmail.
+7. Auth activates the account.
+8. Client can now log in.
 ```
 
 ## Expected Login/Refresh Flow With Gateway
@@ -1087,7 +1101,7 @@ logoutSession:
 
 Recent manual/E2E checks covered:
 
-- legacy direct register + verify email
+- Gateway/public register with gender + verify email
 - internal custom-userId creation used by SocialGraph
 - login
 - refresh token rotation
@@ -1105,11 +1119,30 @@ Recent manual/E2E checks covered:
 - OTP resend limit
 - cookie instruction contract
 - internal `validateGatewaySession` contract
+- internal Payment secret rejection, Premium state read, idempotent `validDate` update, and no-shortening retry behavior
 - revoked access token rejection
 - multi-device session behavior
 - Gateway proxy login/refresh/logout cookie behavior
 
-There is no permanent test project yet. Future improvement: create `fakebookAuth.Tests` and move temporary E2E runner logic into `dotnet test`.
+The reproducible local E2E runner is `scripts/auth-gateway-e2e.ps1`. It exercises 37 Auth/Gateway assertions and does not print OTPs, access tokens, refresh tokens, or cookie values. A future improvement is to move it into a platform-neutral `dotnet test` project.
+
+## Backend-Payment Internal Contract
+
+Authentication owns `fb.id_user.valid_date`; Payment owns all orders, provider transactions, and outbox data. Configure `Payment__InternalSharedSecret` independently from `Gateway__InternalSharedSecret`.
+
+Backend-Payment calls Auth directly with `X-Payment-Secret`:
+
+```graphql
+query PaymentPremiumState($userId: ID!) {
+  paymentPremiumState(userId: $userId) { userId validDate }
+}
+
+mutation SetPaymentValidDate($input: SetPaymentValidDateInput!) {
+  setPaymentValidDate(input: $input) { userId validDate }
+}
+```
+
+Both operations compare the secret in constant time. `setPaymentValidDate` is idempotent and never shortens validity because persistence uses `GREATEST(COALESCE(valid_date, '-infinity'), @ValidDate)`. Gateway schema extensions must mark both fields `@internal`; `UserType.validDate` remains available on user projections.
 
 ## Local Commands
 

@@ -73,6 +73,7 @@ Auth__RefreshTokenCookieSameSite
 Auth__RefreshTokenCookieHttpOnly
 Auth__RefreshTokenCookieSecure
 Gateway__InternalSharedSecret
+Payment__InternalSharedSecret
 Smtp__Enabled
 Smtp__Host
 Smtp__Port
@@ -359,6 +360,7 @@ query Me {
     username
     dob
     displayName
+    gender
     status
   }
 }
@@ -464,7 +466,8 @@ Payload:
   "email": "a@example.com",
   "password": "at-least-8-chars",
   "displayName": "Nguyen Van A",
-  "dob": "2000-01-01"
+  "dob": "2000-01-01",
+  "gender": true
 }
 ```
 
@@ -480,7 +483,7 @@ Hành vi:
 
 ### register
 
-Đây là mutation đăng ký legacy/direct-subgraph. Gateway hiện mark mutation này `@internal`; frontend đăng ký bình thường phải dùng SocialGraph `createUser` qua Gateway. Mutation được giữ lại để tương thích ngược và test Auth độc lập.
+Đây là mutation đăng ký public mà frontend gọi qua Gateway.
 
 Mutation tạo account unverified với ID do Auth tự sinh và tạo OTP verify email.
 
@@ -501,6 +504,7 @@ Variables:
     "displayName": "Quan Trieu",
     "dob": "2000-01-01",
     "email": "quan@example.com",
+    "gender": true,
     "username": "quantrieu",
     "password": "Password123!"
   }
@@ -510,6 +514,7 @@ Variables:
 Lưu ý:
 
 - Email và username được normalize về lower-case.
+- Gender là bắt buộc: `true` là Nam và `false` là Nữ.
 - Password tối thiểu 8 ký tự.
 - User mới có `status = 4` (unverified).
 - Nếu SMTP enabled, OTP sẽ được gửi qua email.
@@ -602,6 +607,7 @@ mutation Login($input: LoginInput!) {
       email
       username
       displayName
+      gender
       status
     }
   }
@@ -651,6 +657,7 @@ mutation RefreshToken($input: RefreshTokenInput!) {
       userId
       email
       username
+      gender
     }
   }
 }
@@ -910,7 +917,17 @@ type UserType {
   username: String!
   dob: Date
   displayName: String!
+  gender: Boolean
   status: Short!
+}
+
+input RegisterInput {
+  displayName: String!
+  dob: Date
+  email: String!
+  gender: Boolean!
+  username: String!
+  password: String!
 }
 
 type SessionType {
@@ -1036,17 +1053,14 @@ Ví dụ:
 ## Quy Trình Đăng Ký Chuẩn
 
 ```text
-1. Client gửi name, gender, birthdate, location, email và password tới Gateway createUser.
-2. Gateway route createUser sang SocialGraph qua Fusion.
-3. SocialGraph tạo profile object và canonical Snowflake userId.
-4. SocialGraph gọi Auth POST /internal/users với userId đó và X-Gateway-Secret.
-5. Auth tạo identity unverified bằng đúng userId được truyền và lưu password hash.
-6. Auth tạo verification OTP hash và gửi email nếu SMTP enabled.
-7. Nếu Auth lỗi, SocialGraph xóa profile object vừa tạo và trả CreateUserPayload thất bại.
-8. Nếu Auth thành công, SocialGraph provision Search/Recommendation theo best-effort rồi trả userId.
-9. Client gửi identifier + OTP qua Gateway verifyEmail.
-10. Auth activate account.
-11. Client có thể login.
+1. Client gửi displayName, dob, gender, email, username và password tới Gateway register.
+2. Gateway route register sang Authentication subgraph qua Fusion.
+3. Auth sinh canonical Snowflake userId.
+4. Auth tạo identity unverified, lưu boolean gender và password hash.
+5. Auth tạo verification OTP hash và gửi email nếu SMTP enabled.
+6. Client gửi identifier + OTP qua Gateway verifyEmail.
+7. Auth activate account.
+8. Client có thể login.
 ```
 
 ## Quy Trình Login/Refresh Với Gateway
@@ -1087,7 +1101,7 @@ logoutSession:
 
 Các E2E/manual check gần đây đã cover:
 
-- legacy direct register + verify email
+- Gateway/public register có gender + verify email
 - internal create bằng custom userId cho SocialGraph
 - login
 - refresh token rotation
@@ -1105,11 +1119,30 @@ Các E2E/manual check gần đây đã cover:
 - OTP resend limit
 - cookie instruction contract
 - internal `validateGatewaySession` contract
+- reject sai Payment secret, đọc Premium state, update `validDate` idempotent và retry không rút ngắn validity
 - reject access token của session đã revoke
 - multi-device session behavior
 - Gateway proxy login/refresh/logout cookie behavior
 
-Hiện chưa có test project cố định. Nên tạo `fakebookAuth.Tests` và chuyển logic E2E tạm sang `dotnet test`.
+Local E2E runner có thể chạy lại nằm tại `scripts/auth-gateway-e2e.ps1`. Script cover 37 Auth/Gateway assertions và không print OTP, access token, refresh token hay cookie value. Cải tiến tiếp theo là chuyển sang `dotnet test` platform-neutral.
+
+## Contract Nội bộ với Backend-Payment
+
+Authentication sở hữu `fb.id_user.valid_date`; Payment sở hữu toàn bộ order, provider transaction và outbox data. Cấu hình `Payment__InternalSharedSecret` độc lập với `Gateway__InternalSharedSecret`.
+
+Backend-Payment gọi trực tiếp Auth bằng `X-Payment-Secret`:
+
+```graphql
+query PaymentPremiumState($userId: ID!) {
+  paymentPremiumState(userId: $userId) { userId validDate }
+}
+
+mutation SetPaymentValidDate($input: SetPaymentValidDateInput!) {
+  setPaymentValidDate(input: $input) { userId validDate }
+}
+```
+
+Hai operation so sánh secret constant-time. `setPaymentValidDate` idempotent và không bao giờ rút ngắn validity vì persistence dùng `GREATEST(COALESCE(valid_date, '-infinity'), @ValidDate)`. Gateway schema extensions phải đánh dấu cả hai field là `@internal`; `UserType.validDate` vẫn có trên user projection.
 
 ## Lệnh Local
 

@@ -7,6 +7,7 @@ public sealed record RegisterInput(
     [property: GraphQLType(typeof(DateType))]
     DateOnly Dob,
     string Email,
+    bool Gender,
     string Username,
     string Password);
 
@@ -19,6 +20,7 @@ public sealed record CreateUserIdentityInput(
     string DisplayName,
     [property: GraphQLType(typeof(DateType))]
     DateOnly Dob,
+    bool Gender,
     string? Username = null);
 
 public sealed record VerifyEmailInput(string Identifier, string Otp);
@@ -52,6 +54,18 @@ public sealed record GatewaySessionValidationPayload(
     [property: GraphQLType(typeof(DateTimeType))]
     DateTimeOffset? ExpiresAt);
 
+public sealed record PaymentPremiumState(
+    [property: ID]
+    string UserId,
+    [property: GraphQLType(typeof(DateTimeType))]
+    DateTimeOffset? ValidDate);
+
+public sealed record SetPaymentValidDateInput(
+    [property: ID]
+    string UserId,
+    [property: GraphQLType(typeof(DateTimeType))]
+    DateTimeOffset ValidDate);
+
 public sealed record GatewayCookieInstruction(
     string Operation,
     string Name,
@@ -84,6 +98,9 @@ public sealed record UserType(
     [property: GraphQLType(typeof(DateType))]
     DateOnly? Dob,
     string DisplayName,
+    bool? Gender,
+    [property: GraphQLType(typeof(DateTimeType))]
+    DateTimeOffset? ValidDate,
     short Status);
 
 public sealed record SessionType(

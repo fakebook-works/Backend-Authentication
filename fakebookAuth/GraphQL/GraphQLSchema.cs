@@ -26,6 +26,12 @@ public sealed class Query
         [Service] IAuthService authService,
         CancellationToken cancellationToken) =>
         authService.ValidateGatewaySessionAsync(input, cancellationToken);
+
+    public Task<PaymentPremiumState> PaymentPremiumState(
+        [ID] string userId,
+        [Service] IPaymentPremiumService paymentPremiumService,
+        CancellationToken cancellationToken) =>
+        paymentPremiumService.GetAsync(userId, cancellationToken);
 }
 
 [GraphQLName("Mutation")]
@@ -95,4 +101,10 @@ public sealed class AuthMutations
         [Service] IAuthService authService,
         CancellationToken cancellationToken) =>
         authService.ChangePasswordAsync(input, cancellationToken);
+
+    public Task<PaymentPremiumState> SetPaymentValidDate(
+        SetPaymentValidDateInput input,
+        [Service] IPaymentPremiumService paymentPremiumService,
+        CancellationToken cancellationToken) =>
+        paymentPremiumService.SetAsync(input, cancellationToken);
 }

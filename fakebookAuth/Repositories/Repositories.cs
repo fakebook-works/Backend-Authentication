@@ -41,6 +41,11 @@ public interface IUserRepository
         DbTransaction transaction,
         long userId,
         CancellationToken cancellationToken);
+
+    Task<DateTimeOffset?> SetValidDateAsync(
+        long userId,
+        DateTimeOffset validDate,
+        CancellationToken cancellationToken);
 }
 
 public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepository
@@ -77,8 +82,8 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO fb.id_user (user_id, email, username, dob, display_name, status)
-            VALUES (@UserId, @Email, @Username, @Dob, @DisplayName, @Status);
+            INSERT INTO fb.id_user (user_id, email, username, dob, display_name, gender, status)
+            VALUES (@UserId, @Email, @Username, @Dob, @DisplayName, @Gender, @Status);
             """;
 
         var parameters = new
@@ -88,6 +93,7 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
             user.Username,
             Dob = user.Dob?.ToDateTime(TimeOnly.MinValue),
             user.DisplayName,
+            user.Gender,
             user.Status
         };
 
@@ -162,6 +168,30 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         await connection.ExecuteAsync(command);
     }
 
+    public async Task<DateTimeOffset?> SetValidDateAsync(
+        long userId,
+        DateTimeOffset validDate,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE fb.id_user
+            SET valid_date = GREATEST(
+                    COALESCE(valid_date, '-infinity'::timestamptz),
+                    @ValidDate
+                ),
+                updated_at = now()
+            WHERE user_id = @UserId
+            RETURNING valid_date;
+            """;
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        var command = new CommandDefinition(
+            sql,
+            new { UserId = userId, ValidDate = validDate },
+            cancellationToken: cancellationToken);
+        var stored = await connection.QuerySingleOrDefaultAsync<DateTime?>(command);
+        return stored is null ? null : new DateTimeOffset(DateTime.SpecifyKind(stored.Value, DateTimeKind.Utc));
+    }
+
     private const string SelectUserSql = """
         SELECT
             user_id AS UserId,
@@ -170,6 +200,8 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
             username AS Username,
             dob AS Dob,
             display_name AS DisplayName,
+            gender AS Gender,
+            valid_date AS ValidDate,
             status AS Status,
             created_at AS CreatedAt,
             updated_at AS UpdatedAt
@@ -192,6 +224,8 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
             Username = user.Username,
             Dob = user.Dob,
             DisplayName = user.DisplayName,
+            Gender = user.Gender,
+            ValidDate = user.ValidDate,
             Status = user.Status,
             CreatedAt = user.CreatedAt,
             UpdatedAt = user.UpdatedAt
@@ -205,6 +239,8 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         public string Username { get; set; } = string.Empty;
         public DateOnly? Dob { get; set; }
         public string DisplayName { get; set; } = string.Empty;
+        public bool? Gender { get; set; }
+        public DateTimeOffset? ValidDate { get; set; }
         public short Status { get; set; }
         public DateTimeOffset CreatedAt { get; set; }
         public DateTimeOffset UpdatedAt { get; set; }

@@ -1,5 +1,4 @@
 using System.ComponentModel.DataAnnotations;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Npgsql;
@@ -109,6 +108,7 @@ public sealed class AuthService(
                     Username = register.Username,
                     Dob = register.Dob,
                     DisplayName = register.DisplayName,
+                    Gender = register.Gender,
                     Status = AuthConstants.StatusUnverified
                 },
                 cancellationToken);
@@ -1143,7 +1143,7 @@ public sealed class AuthService(
             throw GraphQlError("Date of birth is invalid.", "INVALID_DOB");
         }
 
-        return new NormalizedRegisterInput(displayName, input.Dob, email, username, input.Password);
+        return new NormalizedRegisterInput(displayName, input.Dob, email, username, input.Password, input.Gender);
     }
 
     private static NormalizedRegisterInput NormalizeAndValidate(CreateUserIdentityInput input)
@@ -1176,7 +1176,7 @@ public sealed class AuthService(
             throw GraphQlError("Date of birth is invalid.", "INVALID_DOB");
         }
 
-        return new NormalizedRegisterInput(displayName, input.Dob, email, username, input.Password);
+        return new NormalizedRegisterInput(displayName, input.Dob, email, username, input.Password, input.Gender);
     }
 
     private static string NormalizeIdentifier(string value) => value.Trim().ToLowerInvariant();
@@ -1237,19 +1237,10 @@ public sealed class AuthService(
 
         if (string.IsNullOrWhiteSpace(expected) ||
             string.IsNullOrWhiteSpace(provided) ||
-            !FixedTimeEquals(expected, provided))
+            !InternalSecretComparer.FixedTimeEquals(expected, provided))
         {
             throw GraphQlError("Gateway authentication failed.", "FORBIDDEN");
         }
-    }
-
-    private static bool FixedTimeEquals(string expected, string provided)
-    {
-        var expectedBytes = Encoding.UTF8.GetBytes(expected);
-        var providedBytes = Encoding.UTF8.GetBytes(provided);
-
-        return expectedBytes.Length == providedBytes.Length &&
-               CryptographicOperations.FixedTimeEquals(expectedBytes, providedBytes);
     }
 
     private static GatewaySessionValidationPayload InvalidGatewaySession(long userId, long sessionId) =>
@@ -1538,5 +1529,6 @@ public sealed class AuthService(
         DateOnly Dob,
         string Email,
         string Username,
-        string Password);
+        string Password,
+        bool Gender);
 }

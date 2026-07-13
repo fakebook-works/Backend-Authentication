@@ -31,7 +31,7 @@ fakebookAuth/
 
 ## Core Features
 
-- Direct/legacy Auth registration with email verification OTP
+- Public GraphQL registration through the Gateway with email verification OTP
 - Create an unverified identity with a caller-supplied canonical SocialGraph user ID
 - Resend email verification code with cooldown and rate limiting
 - Login with username/email and password
@@ -176,7 +176,7 @@ resetPassword(input: ResetPasswordInput!): AuthActionPayload!
 changePassword(input: ChangePasswordInput!): AuthActionPayload!
 ```
 
-`register` remains in the Authentication subgraph for direct/backward-compatible use. The current Gateway marks it `@internal`; normal frontend registration must call SocialGraph `createUser` through the Gateway.
+`register` is the current public frontend registration mutation exposed by the Gateway. It requires display name, date of birth, email, gender, username, and password.
 
 Protected operations require:
 
@@ -201,9 +201,19 @@ Body:
   "email": "a@example.com",
   "password": "at-least-8-chars",
   "displayName": "Nguyen Van A",
-  "dob": "2000-01-01"
+  "dob": "2000-01-01",
+  "gender": true
 }
 ```
+
+Gender uses a binary boolean contract throughout Authentication:
+
+```text
+true  = Male
+false = Female
+```
+
+The public GraphQL `register` mutation also requires `gender`. Existing identity rows created before the gender migration may return `gender = null` from `UserType`.
 
 This endpoint creates an unverified user, password credential, and email verification OTP using the supplied `userId`. It is internal-only and rejects calls without the shared secret.
 
@@ -215,10 +225,10 @@ Recommended flow:
 
 ```text
 Registration:
-  Frontend -> Gateway createUser -> SocialGraph
-  SocialGraph generates canonical userId and calls Auth POST /internal/users
-  Auth creates the unverified identity, password credential, and verification OTP
-  SocialGraph rolls back its user object if the required Auth call fails
+  Frontend -> Gateway -> Auth register
+  Auth generates the userId and creates the unverified identity with gender
+  Auth stores the password hash and creates the email verification OTP
+  Frontend verifies the OTP before login
 
 Login:
   Frontend -> Gateway -> Auth login
@@ -239,6 +249,22 @@ Logout:
 
 Other subgraphs should not read browser cookies. They should receive trusted identity context from the Gateway, such as user id, session id, username, and correlation id.
 
+## Payment Premium Validity
+
+Authentication remains the sole owner of `fb.id_user.valid_date`. Backend-Payment calls these internal GraphQL operations directly with `X-Payment-Secret`:
+
+```graphql
+query PaymentPremiumState($userId: ID!) {
+  paymentPremiumState(userId: $userId) { userId validDate }
+}
+
+mutation SetPaymentValidDate($input: SetPaymentValidDateInput!) {
+  setPaymentValidDate(input: $input) { userId validDate }
+}
+```
+
+Configure `Payment__InternalSharedSecret` independently from the Gateway secret. The setter is idempotent and uses `GREATEST`, so retries can never shorten Premium validity. Gateway composition marks both operations internal; `UserType.validDate` remains readable on normal user projections.
+
 ## Security Notes
 
 - Never commit real `appsettings.json` secrets.
@@ -255,3 +281,5 @@ For detailed developer and AI agent guidance, see:
 
 - `fakebookAuth/AGENT.md`
 - `fakebookAuth/AGENT_VIE.md`
+
+The reproducible local Auth/Gateway suite is `scripts/auth-gateway-e2e.ps1`. It expects running Auth, Gateway, and a PostgreSQL Docker container, and validates 37 registration, gender, OTP, login, JWT/session, refresh-cookie, password, logout, and spoofing assertions without printing OTPs or tokens.

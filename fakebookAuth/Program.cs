@@ -60,6 +60,14 @@ public static class Program
             .ValidateOnStart();
 
         builder.Services
+            .AddOptions<PaymentOptions>()
+            .Bind(builder.Configuration.GetSection(PaymentOptions.SectionName))
+            .Validate(
+                options => options.InternalSharedSecretBytes == 0 || options.InternalSharedSecretBytes >= 32,
+                "Payment:InternalSharedSecret must be at least 32 bytes when configured.")
+            .ValidateOnStart();
+
+        builder.Services
             .AddOptions<SmtpOptions>()
             .Bind(builder.Configuration.GetSection(SmtpOptions.SectionName))
             .Validate(options => !options.Enabled || options.IsConfigured, "SMTP must be fully configured when Smtp:Enabled is true.")
@@ -86,6 +94,7 @@ public static class Program
         builder.Services.AddScoped<ISessionRepository, SessionRepository>();
         builder.Services.AddScoped<IAuditLogRepository, AuditLogRepository>();
         builder.Services.AddScoped<IAuthService, AuthService>();
+        builder.Services.AddScoped<IPaymentPremiumService, PaymentPremiumService>();
 
         builder.Services
             .AddGraphQLServer("Authentication")

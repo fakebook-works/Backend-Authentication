@@ -47,6 +47,15 @@ public sealed class GatewayOptions
     public int InternalSharedSecretBytes => Encoding.UTF8.GetByteCount(InternalSharedSecret);
 }
 
+public sealed class PaymentOptions
+{
+    public const string SectionName = "Payment";
+
+    public string InternalSharedSecret { get; init; } = string.Empty;
+
+    public int InternalSharedSecretBytes => Encoding.UTF8.GetByteCount(InternalSharedSecret);
+}
+
 public sealed class SmtpOptions
 {
     public const string SectionName = "Smtp";
