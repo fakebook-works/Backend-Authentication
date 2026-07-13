@@ -24,6 +24,7 @@ fakebookAuth/
   Repositories/         PostgreSQL data access
   Security/             Hashing, JWT, token, OTP, Snowflake ID helpers
   Services/             Auth business logic and SMTP sender
+  migrations/           Idempotent migrations for existing databases
   schema.sql            Reference PostgreSQL schema
   AGENT.md              Detailed English agent/developer guide
   AGENT_VIE.md          Detailed Vietnamese agent/developer guide
@@ -31,10 +32,10 @@ fakebookAuth/
 
 ## Core Features
 
-- Public GraphQL registration through the Gateway with email verification OTP
+- Canonical registration through Gateway `createUser` and SocialGraph provisioning
 - Create an unverified identity with a caller-supplied canonical SocialGraph user ID
 - Resend email verification code with cooldown and rate limiting
-- Login with username/email and password
+- Email/password login
 - Short-lived JWT access tokens
 - Refresh token rotation with SHA-256 hashed storage
 - Refresh token reuse detection
@@ -78,6 +79,7 @@ Auth__LoginFailureLimit
 Auth__RefreshTokenCookieName
 Auth__RefreshTokenCookieSameSite
 Gateway__InternalSharedSecret
+Payment__InternalSharedSecret
 Smtp__Enabled
 Smtp__Host
 Smtp__Port
@@ -176,7 +178,7 @@ resetPassword(input: ResetPasswordInput!): AuthActionPayload!
 changePassword(input: ChangePasswordInput!): AuthActionPayload!
 ```
 
-`register` is the current public frontend registration mutation exposed by the Gateway. It requires display name, date of birth, email, gender, username, and password.
+`register` is available for direct Authentication testing and backward compatibility, but the Gateway marks it `@internal`. Normal frontend registration must call SocialGraph `createUser`. Authentication registration requires display name, date of birth, email, gender, and password; Authentication does not store or validate SocialGraph usernames.
 
 Protected operations require:
 
@@ -213,7 +215,7 @@ true  = Male
 false = Female
 ```
 
-The public GraphQL `register` mutation also requires `gender`. Existing identity rows created before the gender migration may return `gender = null` from `UserType`.
+The Auth-only GraphQL `register` mutation also requires `gender`. Existing identity rows created before the gender migration may return `gender = null` from `UserType`.
 
 This endpoint creates an unverified user, password credential, and email verification OTP using the supplied `userId`. It is internal-only and rejects calls without the shared secret.
 
@@ -252,7 +254,7 @@ Logout:
   Gateway clears cookie when instruction operation is CLEAR
 ```
 
-Other subgraphs should not read browser cookies. They should receive trusted identity context from the Gateway, such as user id, session id, username, and correlation id.
+Other subgraphs should not read browser cookies. They receive trusted identity context from the Gateway as user id, session id, shared secret, and correlation id. Username/profile lookups belong to SocialGraph and are not carried in Auth JWTs or trusted headers.
 
 ## Payment Premium Validity
 
@@ -270,6 +272,17 @@ mutation SetPaymentValidDate($input: SetPaymentValidDateInput!) {
 
 Configure `Payment__InternalSharedSecret` independently from the Gateway secret. The setter is idempotent and uses `GREATEST`, so retries can never shorten Premium validity. Gateway composition marks both operations internal; `UserType.validDate` remains readable on normal user projections.
 
+## Existing Database Migration
+
+Apply the additive migrations before deploying this version because Auth user reads select `gender` and `valid_date`:
+
+```text
+fakebookAuth/migrations/20260713_add_gender.sql
+fakebookAuth/migrations/20260713_add_valid_date.sql
+```
+
+For a zero-downtime rollout, deploy the SocialGraph payload change that sends `gender` first, apply the two additive migrations, then deploy Authentication and the recomposed Gateway. Older Authentication versions ignore the additional REST JSON property. After every old Authentication instance has stopped, apply the destructive `fakebookAuth/migrations/20260714_remove_username.sql` migration; the new version works while the old column is still present. In a maintenance-window deployment, all three migrations may run in filename order before starting the new application version.
+
 ## Security Notes
 
 - Never commit real `appsettings.json` secrets.
@@ -278,6 +291,7 @@ Configure `Payment__InternalSharedSecret` independently from the Gateway secret.
 - Reusing an old refresh token from an active session revokes all sessions.
 - Using a token from an already revoked or expired session only returns `INVALID_REFRESH_TOKEN`.
 - Access tokens include `sid`; protected auth operations reject revoked or expired sessions.
+- Access tokens contain `user_id`, `sid`, and display name, but no SocialGraph username.
 - Keep access tokens short-lived and refresh tokens in HttpOnly Secure cookies.
 
 ## More Documentation
@@ -287,4 +301,4 @@ For detailed developer and AI agent guidance, see:
 - `fakebookAuth/AGENT.md`
 - `fakebookAuth/AGENT_VIE.md`
 
-The reproducible local Auth/Gateway suite is `scripts/auth-gateway-e2e.ps1`. It expects running Auth, Gateway, and a PostgreSQL Docker container, and validates 37 registration, gender, OTP, login, JWT/session, refresh-cookie, password, logout, and spoofing assertions without printing OTPs or tokens.
+Automated contract tests run with `dotnet test fakebookAuth.sln`. The broader `scripts/auth-gateway-e2e.ps1` suite expects Auth, SocialGraph, Gateway, Payment dependencies, and a PostgreSQL Docker container; pass `-PaymentSecret` with the same value as Auth `Payment__InternalSharedSecret`. It covers canonical registration, gender propagation, OTP, email-only login, JWT/session, Payment validity, refresh cookies, password flows, logout, and spoofing without printing OTPs or tokens.

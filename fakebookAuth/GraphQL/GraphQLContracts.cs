@@ -4,11 +4,10 @@ namespace fakebookAuth;
 
 public sealed record RegisterInput(
     string DisplayName,
-    [property: GraphQLType(typeof(DateType))]
+    [property: GraphQLType(typeof(NonNullType<DateType>))]
     DateOnly Dob,
     string Email,
     bool Gender,
-    string Username,
     string Password);
 
 public sealed record RegisterPayload(bool Success, string? Message);
@@ -18,10 +17,8 @@ public sealed record CreateUserIdentityInput(
     string Email,
     string Password,
     string DisplayName,
-    [property: GraphQLType(typeof(DateType))]
-    DateOnly Dob,
-    bool Gender,
-    string? Username = null);
+    DateOnly? Dob,
+    bool? Gender);
 
 public sealed record VerifyEmailInput(string Identifier, string Otp);
 
@@ -49,7 +46,6 @@ public sealed record GatewaySessionValidationPayload(
     bool IsValid,
     long? UserId,
     long? SessionId,
-    string? Username,
     short? Status,
     [property: GraphQLType(typeof(DateTimeType))]
     DateTimeOffset? ExpiresAt);
@@ -63,7 +59,7 @@ public sealed record PaymentPremiumState(
 public sealed record SetPaymentValidDateInput(
     [property: ID]
     string UserId,
-    [property: GraphQLType(typeof(DateTimeType))]
+    [property: GraphQLType(typeof(NonNullType<DateTimeType>))]
     DateTimeOffset ValidDate);
 
 public sealed record GatewayCookieInstruction(
@@ -94,7 +90,6 @@ public sealed record LoginPayload(
 public sealed record UserType(
     long UserId,
     string Email,
-    string Username,
     [property: GraphQLType(typeof(DateType))]
     DateOnly? Dob,
     string DisplayName,

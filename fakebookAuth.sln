@@ -1,6 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
+#
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "fakebookAuth", "fakebookAuth\fakebookAuth.csproj", "{AC78B3B9-BF5E-4CA0-9E82-70A7E8D7141F}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{4C554DE6-9713-4123-BA15-AE9028109060}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "fakebookAuth.Tests", "tests\fakebookAuth.Tests\fakebookAuth.Tests.csproj", "{E72EF515-6751-4E76-987A-210BF8C6836E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -12,5 +17,12 @@ Global
 		{AC78B3B9-BF5E-4CA0-9E82-70A7E8D7141F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{AC78B3B9-BF5E-4CA0-9E82-70A7E8D7141F}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{AC78B3B9-BF5E-4CA0-9E82-70A7E8D7141F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E72EF515-6751-4E76-987A-210BF8C6836E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E72EF515-6751-4E76-987A-210BF8C6836E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E72EF515-6751-4E76-987A-210BF8C6836E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E72EF515-6751-4E76-987A-210BF8C6836E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{E72EF515-6751-4E76-987A-210BF8C6836E} = {4C554DE6-9713-4123-BA15-AE9028109060}
 	EndGlobalSection
 EndGlobal

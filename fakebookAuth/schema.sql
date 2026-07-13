@@ -9,7 +9,6 @@ CREATE TABLE id_user (
                          user_id          bigint PRIMARY KEY,
                          email            text UNIQUE,
                          phone            text UNIQUE,
-                         username         text UNIQUE,
                          dob              date,
                          display_name     text,
                          gender           boolean,
@@ -151,4 +150,3 @@ CREATE INDEX id_verification_token_idx ON id_verification (token_hash);
 -- (Tùy chọn) B-Tree index chuẩn cho các trường định danh dùng để login
 CREATE INDEX id_user_email_idx ON id_user (email);
 CREATE INDEX id_user_phone_idx ON id_user (phone);
-CREATE INDEX id_user_username_idx ON id_user (username);

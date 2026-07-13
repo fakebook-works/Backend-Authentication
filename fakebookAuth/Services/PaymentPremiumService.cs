@@ -37,7 +37,10 @@ public sealed class PaymentPremiumService(
     {
         EnsurePaymentSecret();
         var parsedUserId = ParseUserId(input.UserId);
-        var stored = await users.SetValidDateAsync(parsedUserId, input.ValidDate, cancellationToken);
+        var stored = await users.SetValidDateAsync(
+            parsedUserId,
+            input.ValidDate.ToUniversalTime(),
+            cancellationToken);
         if (stored is null)
         {
             throw Error("User was not found.", "NOT_FOUND");

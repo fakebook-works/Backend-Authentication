@@ -7,11 +7,10 @@ namespace fakebookAuth;
 
 public interface IUserRepository
 {
-    Task<bool> IdentifierExistsAsync(
+    Task<bool> EmailExistsAsync(
         DbConnection connection,
         DbTransaction transaction,
         string email,
-        string username,
         CancellationToken cancellationToken);
 
     Task InsertAsync(
@@ -20,7 +19,7 @@ public interface IUserRepository
         IdentityUser user,
         CancellationToken cancellationToken);
 
-    Task<IdentityUser?> FindByIdentifierAsync(string identifier, CancellationToken cancellationToken);
+    Task<IdentityUser?> FindByEmailAsync(string email, CancellationToken cancellationToken);
 
     Task<IdentityUser?> FindByIdAsync(long userId, CancellationToken cancellationToken);
 
@@ -30,10 +29,10 @@ public interface IUserRepository
         long userId,
         CancellationToken cancellationToken);
 
-    Task<IdentityUser?> FindByIdentifierAsync(
+    Task<IdentityUser?> FindByEmailAsync(
         DbConnection connection,
         DbTransaction transaction,
-        string identifier,
+        string email,
         CancellationToken cancellationToken);
 
     Task ActivateAsync(
@@ -50,11 +49,10 @@ public interface IUserRepository
 
 public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepository
 {
-    public async Task<bool> IdentifierExistsAsync(
+    public async Task<bool> EmailExistsAsync(
         DbConnection connection,
         DbTransaction transaction,
         string email,
-        string username,
         CancellationToken cancellationToken)
     {
         const string sql = """
@@ -62,13 +60,12 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
                 SELECT 1
                 FROM fb.id_user
                 WHERE lower(email) = lower(@Email)
-                   OR lower(username) = lower(@Username)
             );
             """;
 
         var command = new CommandDefinition(
             sql,
-            new { Email = email, Username = username },
+            new { Email = email },
             transaction,
             cancellationToken: cancellationToken);
 
@@ -82,15 +79,14 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO fb.id_user (user_id, email, username, dob, display_name, gender, status)
-            VALUES (@UserId, @Email, @Username, @Dob, @DisplayName, @Gender, @Status);
+            INSERT INTO fb.id_user (user_id, email, dob, display_name, gender, status)
+            VALUES (@UserId, @Email, @Dob, @DisplayName, @Gender, @Status);
             """;
 
         var parameters = new
         {
             user.UserId,
             user.Email,
-            user.Username,
             Dob = user.Dob?.ToDateTime(TimeOnly.MinValue),
             user.DisplayName,
             user.Gender,
@@ -101,10 +97,10 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         await connection.ExecuteAsync(command);
     }
 
-    public async Task<IdentityUser?> FindByIdentifierAsync(string identifier, CancellationToken cancellationToken)
+    public async Task<IdentityUser?> FindByEmailAsync(string email, CancellationToken cancellationToken)
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
-        return await FindByIdentifierAsync(connection, transaction: null!, identifier, cancellationToken);
+        return await FindByEmailAsync(connection, transaction: null!, email, cancellationToken);
     }
 
     public async Task<IdentityUser?> FindByIdAsync(long userId, CancellationToken cancellationToken)
@@ -129,15 +125,15 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         return user is null ? null : Map(user);
     }
 
-    public async Task<IdentityUser?> FindByIdentifierAsync(
+    public async Task<IdentityUser?> FindByEmailAsync(
         DbConnection connection,
         DbTransaction transaction,
-        string identifier,
+        string email,
         CancellationToken cancellationToken)
     {
         var command = new CommandDefinition(
-            SelectByIdentifierSql,
-            new { Identifier = identifier },
+            SelectByEmailSql,
+            new { Email = email },
             transaction,
             cancellationToken: cancellationToken);
 
@@ -179,7 +175,10 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
                     COALESCE(valid_date, '-infinity'::timestamptz),
                     @ValidDate
                 ),
-                updated_at = now()
+                updated_at = CASE
+                    WHEN valid_date IS NULL OR @ValidDate > valid_date THEN now()
+                    ELSE updated_at
+                END
             WHERE user_id = @UserId
             RETURNING valid_date;
             """;
@@ -197,7 +196,6 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
             user_id AS UserId,
             email AS Email,
             phone AS Phone,
-            username AS Username,
             dob AS Dob,
             display_name AS DisplayName,
             gender AS Gender,
@@ -208,10 +206,9 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         FROM fb.id_user
         """;
 
-    private const string SelectByIdentifierSql = $"""
+    private const string SelectByEmailSql = $"""
         {SelectUserSql}
-        WHERE lower(email) = lower(@Identifier)
-           OR lower(username) = lower(@Identifier)
+        WHERE lower(email) = lower(@Email)
         LIMIT 1;
         """;
 
@@ -221,7 +218,6 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
             UserId = user.UserId,
             Email = user.Email,
             Phone = user.Phone,
-            Username = user.Username,
             Dob = user.Dob,
             DisplayName = user.DisplayName,
             Gender = user.Gender,
@@ -236,7 +232,6 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         public long UserId { get; set; }
         public string Email { get; set; } = string.Empty;
         public string? Phone { get; set; }
-        public string Username { get; set; } = string.Empty;
         public DateOnly? Dob { get; set; }
         public string DisplayName { get; set; } = string.Empty;
         public bool? Gender { get; set; }

@@ -88,14 +88,13 @@ public sealed class AuthService(
 
         try
         {
-            if (await users.IdentifierExistsAsync(
+            if (await users.EmailExistsAsync(
                     connection,
                     transaction,
                     register.Email,
-                    register.Username,
                     cancellationToken))
             {
-                throw GraphQlError("Email or username already exists.", "IDENTIFIER_EXISTS");
+                throw GraphQlError("Email already exists.", "IDENTIFIER_EXISTS");
             }
 
             await users.InsertAsync(
@@ -105,7 +104,6 @@ public sealed class AuthService(
                 {
                     UserId = userId,
                     Email = register.Email,
-                    Username = register.Username,
                     Dob = register.Dob,
                     DisplayName = register.DisplayName,
                     Gender = register.Gender,
@@ -141,7 +139,7 @@ public sealed class AuthService(
         catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.UniqueViolation)
         {
             await RollbackQuietlyAsync(transaction, cancellationToken);
-            throw GraphQlError("Email or username already exists.", "IDENTIFIER_EXISTS");
+            throw GraphQlError("Email already exists.", "IDENTIFIER_EXISTS");
         }
         catch
         {
@@ -177,7 +175,7 @@ public sealed class AuthService(
 
     public async Task<VerifyEmailPayload> VerifyEmailAsync(VerifyEmailInput input, CancellationToken cancellationToken)
     {
-        var identifier = NormalizeIdentifier(input.Identifier);
+        var identifier = NormalizeEmail(input.Identifier);
         var otp = NormalizeOtp(input.Otp);
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
 
@@ -186,7 +184,7 @@ public sealed class AuthService(
 
         try
         {
-            var user = await users.FindByIdentifierAsync(connection, transaction, identifier, cancellationToken);
+            var user = await users.FindByEmailAsync(connection, transaction, identifier, cancellationToken);
             if (user is null)
             {
                 throw GraphQlError("Verification code is invalid or expired.", "INVALID_OR_EXPIRED_VERIFICATION_CODE");
@@ -269,7 +267,7 @@ public sealed class AuthService(
 
     public async Task<LoginPayload> LoginAsync(LoginInput input, CancellationToken cancellationToken)
     {
-        var identifier = NormalizeIdentifier(input.Identifier);
+        var identifier = NormalizeEmail(input.Identifier);
         if (string.IsNullOrWhiteSpace(identifier) || string.IsNullOrWhiteSpace(input.Password))
         {
             throw InvalidCredentials();
@@ -278,7 +276,7 @@ public sealed class AuthService(
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
         await EnsureLoginNotRateLimitedAsync(identifier, metadata, cancellationToken);
 
-        var user = await users.FindByIdentifierAsync(identifier, cancellationToken);
+        var user = await users.FindByEmailAsync(identifier, cancellationToken);
         if (user is null)
         {
             await RecordLoginFailureAsync(identifier, null, "USER_NOT_FOUND", metadata, cancellationToken);
@@ -700,7 +698,7 @@ public sealed class AuthService(
         ResendEmailVerificationInput input,
         CancellationToken cancellationToken)
     {
-        var identifier = NormalizeIdentifier(input.Identifier);
+        var identifier = NormalizeEmail(input.Identifier);
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
@@ -708,7 +706,7 @@ public sealed class AuthService(
 
         try
         {
-            var user = await users.FindByIdentifierAsync(connection, transaction, identifier, cancellationToken);
+            var user = await users.FindByEmailAsync(connection, transaction, identifier, cancellationToken);
             if (user is null)
             {
                 throw GraphQlError("Account was not found.", "ACCOUNT_NOT_FOUND");
@@ -787,7 +785,7 @@ public sealed class AuthService(
         RequestPasswordResetInput input,
         CancellationToken cancellationToken)
     {
-        var identifier = NormalizeIdentifier(input.Identifier);
+        var identifier = NormalizeEmail(input.Identifier);
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
         IdentityUser? userToEmail = null;
         string? otpToEmail = null;
@@ -797,7 +795,7 @@ public sealed class AuthService(
 
         try
         {
-            var user = await users.FindByIdentifierAsync(connection, transaction, identifier, cancellationToken);
+            var user = await users.FindByEmailAsync(connection, transaction, identifier, cancellationToken);
             if (user is not null &&
                 user.Status == AuthConstants.StatusActive)
             {
@@ -876,7 +874,7 @@ public sealed class AuthService(
         ResetPasswordInput input,
         CancellationToken cancellationToken)
     {
-        var identifier = NormalizeIdentifier(input.Identifier);
+        var identifier = NormalizeEmail(input.Identifier);
         var otp = NormalizeOtp(input.Otp);
         ValidatePassword(input.NewPassword);
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
@@ -886,7 +884,7 @@ public sealed class AuthService(
 
         try
         {
-            var user = await users.FindByIdentifierAsync(connection, transaction, identifier, cancellationToken);
+            var user = await users.FindByEmailAsync(connection, transaction, identifier, cancellationToken);
             if (user is null || user.Status != AuthConstants.StatusActive)
             {
                 throw GraphQlError("Password reset code is invalid or expired.", "INVALID_OR_EXPIRED_PASSWORD_RESET_CODE");
@@ -1084,7 +1082,6 @@ public sealed class AuthService(
                 false,
                 user.UserId,
                 input.SessionId,
-                user.Username,
                 user.Status,
                 null);
         }
@@ -1101,7 +1098,6 @@ public sealed class AuthService(
                 false,
                 user.UserId,
                 input.SessionId,
-                user.Username,
                 user.Status,
                 null);
         }
@@ -1110,15 +1106,13 @@ public sealed class AuthService(
             true,
             user.UserId,
             session.SessionId,
-            user.Username,
             user.Status,
             session.ExpiresAt);
     }
 
     private static NormalizedRegisterInput NormalizeAndValidate(RegisterInput input)
     {
-        var email = NormalizeIdentifier(input.Email);
-        var username = NormalizeIdentifier(input.Username);
+        var email = NormalizeEmail(input.Email);
         var displayName = input.DisplayName.Trim();
 
         if (string.IsNullOrWhiteSpace(displayName))
@@ -1131,11 +1125,6 @@ public sealed class AuthService(
             throw GraphQlError("Email is invalid.", "INVALID_EMAIL");
         }
 
-        if (string.IsNullOrWhiteSpace(username))
-        {
-            throw GraphQlError("Username is required.", "INVALID_USERNAME");
-        }
-
         ValidatePassword(input.Password);
 
         if (input.Dob > DateOnly.FromDateTime(DateTime.UtcNow))
@@ -1143,15 +1132,12 @@ public sealed class AuthService(
             throw GraphQlError("Date of birth is invalid.", "INVALID_DOB");
         }
 
-        return new NormalizedRegisterInput(displayName, input.Dob, email, username, input.Password, input.Gender);
+        return new NormalizedRegisterInput(displayName, input.Dob, email, input.Password, input.Gender);
     }
 
     private static NormalizedRegisterInput NormalizeAndValidate(CreateUserIdentityInput input)
     {
-        var email = NormalizeIdentifier(input.Email);
-        var username = string.IsNullOrWhiteSpace(input.Username)
-            ? BuildInternalUsername(email, input.UserId)
-            : NormalizeIdentifier(input.Username);
+        var email = NormalizeEmail(input.Email);
         var displayName = input.DisplayName.Trim();
 
         if (string.IsNullOrWhiteSpace(displayName))
@@ -1164,43 +1150,32 @@ public sealed class AuthService(
             throw GraphQlError("Email is invalid.", "INVALID_EMAIL");
         }
 
-        if (string.IsNullOrWhiteSpace(username))
+        if (input.Dob is null)
         {
-            throw GraphQlError("Username is required.", "INVALID_USERNAME");
+            throw GraphQlError("Date of birth is required.", "INVALID_DOB");
         }
 
         ValidatePassword(input.Password);
 
-        if (input.Dob > DateOnly.FromDateTime(DateTime.UtcNow))
+        if (input.Dob.Value > DateOnly.FromDateTime(DateTime.UtcNow))
         {
             throw GraphQlError("Date of birth is invalid.", "INVALID_DOB");
         }
 
-        return new NormalizedRegisterInput(displayName, input.Dob, email, username, input.Password, input.Gender);
-    }
-
-    private static string NormalizeIdentifier(string value) => value.Trim().ToLowerInvariant();
-
-    private static string BuildInternalUsername(string email, long userId)
-    {
-        var localPart = email.Split('@', 2)[0];
-        var builder = new StringBuilder(localPart.Length);
-
-        foreach (var character in localPart)
+        if (input.Gender is null)
         {
-            if (char.IsLetterOrDigit(character))
-            {
-                builder.Append(char.ToLowerInvariant(character));
-            }
-            else if (character is '.' or '_' or '-')
-            {
-                builder.Append(character);
-            }
+            throw GraphQlError("Gender is required.", "INVALID_GENDER");
         }
 
-        var prefix = builder.Length == 0 ? "user" : builder.ToString();
-        return $"{prefix}_{userId}";
+        return new NormalizedRegisterInput(
+            displayName,
+            input.Dob.Value,
+            email,
+            input.Password,
+            input.Gender.Value);
     }
+
+    private static string NormalizeEmail(string value) => value.Trim().ToLowerInvariant();
 
     private string ResolveRefreshToken(string? value, bool allowMissing = false)
     {
@@ -1244,7 +1219,7 @@ public sealed class AuthService(
     }
 
     private static GatewaySessionValidationPayload InvalidGatewaySession(long userId, long sessionId) =>
-        new(false, userId, sessionId, null, null, null);
+        new(false, userId, sessionId, null, null);
 
     private static void ValidatePassword(string password)
     {
@@ -1528,7 +1503,6 @@ public sealed class AuthService(
         string DisplayName,
         DateOnly Dob,
         string Email,
-        string Username,
         string Password,
         bool Gender);
 }

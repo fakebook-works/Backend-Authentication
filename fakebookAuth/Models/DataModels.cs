@@ -19,7 +19,6 @@ public sealed class IdentityUser
     public long UserId { get; set; }
     public string Email { get; set; } = string.Empty;
     public string? Phone { get; set; }
-    public string Username { get; set; } = string.Empty;
     public DateOnly? Dob { get; set; }
     public string DisplayName { get; set; } = string.Empty;
     public bool? Gender { get; set; }
@@ -28,7 +27,7 @@ public sealed class IdentityUser
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 
-    public UserType ToGraphQl() => new(UserId, Email, Username, Dob, DisplayName, Gender, ValidDate, Status);
+    public UserType ToGraphQl() => new(UserId, Email, Dob, DisplayName, Gender, ValidDate, Status);
 }
 
 public sealed class UserSession

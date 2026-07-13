@@ -117,9 +117,9 @@ public static class Program
             context.Response.Headers["X-Correlation-ID"] = correlationId;
 
             using (logger.BeginScope(new Dictionary<string, object?>
-                   {
-                       ["CorrelationId"] = correlationId
-                   }))
+            {
+                ["CorrelationId"] = correlationId
+            }))
             {
                 await next(context);
             }

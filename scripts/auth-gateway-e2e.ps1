@@ -3,7 +3,8 @@ param(
   [string]$AuthenticationUrl = 'http://localhost:5001/graphql',
   [string]$PostgresContainer = 'fakebook-auth-e2e-db',
   [string]$Database = 'fakebook',
-  [string]$GatewaySecret = 'local-gateway-secret-at-least-32-bytes-2026'
+  [string]$GatewaySecret = 'local-gateway-secret-at-least-32-bytes-2026',
+  [string]$PaymentSecret = 'local-payment-secret-at-least-32-bytes-2026'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,9 +15,7 @@ $authOrigin = ([Uri]$auth).GetLeftPart([UriPartial]::Authority)
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $suffix = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $maleEmail = "authmale$suffix@example.com"
-$maleUser = "authmale$suffix"
 $femaleEmail = "authfemale$suffix@example.com"
-$femaleUser = "authfemale$suffix"
 $password = 'Password123!'
 $changedPassword = 'ChangedPassword123!'
 $resetPassword = 'ResetPassword123!'
@@ -70,6 +69,8 @@ function Run-MigrationTwice([string]$relativePath, [string]$name) {
 
 Run-MigrationTwice 'fakebookAuth\migrations\20260713_add_gender.sql' 'gender'
 Run-MigrationTwice 'fakebookAuth\migrations\20260713_add_valid_date.sql' 'valid_date'
+Run-MigrationTwice 'fakebookAuth\migrations\20260714_remove_username.sql' 'remove_username'
+Assert-True ((Psql "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='fb' AND table_name='id_user' AND column_name='username');") -eq 'f') 'Authentication schema has no username column'
 
 $health = Invoke-GraphQl -Url $gateway -Query 'query { health }'
 Assert-True ($health.Json.data.health -eq 'ok') 'Gateway health proxies Authentication'
@@ -77,27 +78,30 @@ $directHealth = Invoke-GraphQl -Url $auth -Query 'query { health }'
 Assert-True ($directHealth.Json.data.health -eq 'ok') 'Direct Authentication health succeeds'
 
 $registerMutation = 'mutation($input:RegisterInput!){register(input:$input){success message}}'
-$missingGender = Invoke-GraphQl -Url $gateway -Query $registerMutation -Variables @{ input = @{ displayName='Missing Gender'; dob='2000-01-01'; email="missing$suffix@example.com"; username="missing$suffix"; password=$password } }
-Assert-True ($missingGender.Json.errors.Count -gt 0) 'Register rejects missing gender at GraphQL validation'
-$weak = Invoke-GraphQl -Url $gateway -Query $registerMutation -Variables @{ input = @{ displayName='Weak Password'; dob='2000-01-01'; email="weak$suffix@example.com"; gender=$true; username="weak$suffix"; password='short' } }
-Assert-True ((Error-Code $weak) -eq 'WEAK_PASSWORD') 'Register rejects weak password'
-$future = Invoke-GraphQl -Url $gateway -Query $registerMutation -Variables @{ input = @{ displayName='Future DOB'; dob='2999-01-01'; email="future$suffix@example.com"; gender=$true; username="future$suffix"; password=$password } }
-Assert-True ($future.Json.errors.Count -gt 0) 'Register rejects future date of birth'
-$invalidEmail = Invoke-GraphQl -Url $gateway -Query $registerMutation -Variables @{ input = @{ displayName='Invalid Email'; dob='2000-01-01'; email='not-an-email'; gender=$true; username="invalid$suffix"; password=$password } }
-Assert-True ($invalidEmail.Json.errors.Count -gt 0) 'Register rejects invalid email'
+$createUserMutation = 'mutation($input:CreateUserInput!){createUser(input:$input){success userId message}}'
+$missingGender = Invoke-GraphQl -Url $gateway -Query $createUserMutation -Variables @{ input = @{ name='Missing Gender'; birthdate='2000-01-01'; location='Ha Noi'; email="missing$suffix@example.com"; password=$password } }
+Assert-True ($missingGender.Json.errors.Count -gt 0) 'CreateUser rejects missing gender at GraphQL validation'
+$weak = Invoke-GraphQl -Url $auth -Query $registerMutation -Variables @{ input = @{ displayName='Weak Password'; dob='2000-01-01'; email="weak$suffix@example.com"; gender=$true; password='short' } }
+Assert-True ((Error-Code $weak) -eq 'WEAK_PASSWORD') 'Authentication register rejects weak password'
+$future = Invoke-GraphQl -Url $auth -Query $registerMutation -Variables @{ input = @{ displayName='Future DOB'; dob='2999-01-01'; email="future$suffix@example.com"; gender=$true; password=$password } }
+Assert-True ($future.Json.errors.Count -gt 0) 'Authentication register rejects future date of birth'
+$invalidEmail = Invoke-GraphQl -Url $auth -Query $registerMutation -Variables @{ input = @{ displayName='Invalid Email'; dob='2000-01-01'; email='not-an-email'; gender=$true; password=$password } }
+Assert-True ($invalidEmail.Json.errors.Count -gt 0) 'Authentication register rejects invalid email'
 
-$maleRegister = Invoke-GraphQl -Url $gateway -Query $registerMutation -Variables @{ input = @{ displayName='Nguyen Van A'; dob='2000-01-01'; email=$maleEmail; gender=$true; username=$maleUser; password=$password } }
-Assert-True ($maleRegister.Json.data.register.success -eq $true) 'Register male through Gateway'
-$femaleRegister = Invoke-GraphQl -Url $gateway -Query $registerMutation -Variables @{ input = @{ displayName='Tran Thi B'; dob='2001-02-03'; email=$femaleEmail; gender=$false; username=$femaleUser; password=$password } }
-Assert-True ($femaleRegister.Json.data.register.success -eq $true) 'Register female through Gateway'
+$maleRegister = Invoke-GraphQl -Url $gateway -Query $createUserMutation -Variables @{ input = @{ name='Nguyen Van A'; birthdate='2000-01-01'; location='Ha Noi'; email=$maleEmail; gender=$true; password=$password } }
+Assert-True ($maleRegister.Json.data.createUser.success -eq $true -and $maleRegister.Json.data.createUser.userId) 'Create male user through Gateway and SocialGraph'
+$femaleRegister = Invoke-GraphQl -Url $gateway -Query $createUserMutation -Variables @{ input = @{ name='Tran Thi B'; birthdate='2001-02-03'; location='Da Nang'; email=$femaleEmail; gender=$false; password=$password } }
+Assert-True ($femaleRegister.Json.data.createUser.success -eq $true -and $femaleRegister.Json.data.createUser.userId) 'Create female user through Gateway and SocialGraph'
 Assert-True ((Psql "SELECT gender::text FROM fb.id_user WHERE email='$maleEmail';") -eq 'true') 'Male persists as true'
 Assert-True ((Psql "SELECT gender::text FROM fb.id_user WHERE email='$femaleEmail';") -eq 'false') 'Female persists as false'
 
-$duplicate = Invoke-GraphQl -Url $gateway -Query $registerMutation -Variables @{ input = @{ displayName='Duplicate'; dob='2000-01-01'; email=$maleEmail; gender=$true; username="duplicate$suffix"; password=$password } }
-Assert-True ((Error-Code $duplicate) -eq 'IDENTIFIER_EXISTS') 'Register rejects duplicate identifier'
-$loginMutation = 'mutation($input:LoginInput!){login(input:$input){accessToken refreshToken refreshTokenExpiresAt user{userId email username dob displayName gender status}}}'
+$duplicate = Invoke-GraphQl -Url $gateway -Query $createUserMutation -Variables @{ input = @{ name='Duplicate'; birthdate='2000-01-01'; location='Ha Noi'; email=$maleEmail; gender=$true; password=$password } }
+Assert-True ($duplicate.Json.data.createUser.success -eq $false) 'CreateUser rejects duplicate email and rolls back SocialGraph user'
+$loginMutation = 'mutation($input:LoginInput!){login(input:$input){accessToken refreshToken refreshTokenExpiresAt user{userId email dob displayName gender validDate status}}}'
 $unverified = Invoke-GraphQl -Url $gateway -Query $loginMutation -Variables @{ input = @{ identifier=$maleEmail; password=$password } }
 Assert-True ((Error-Code $unverified) -eq 'EMAIL_UNVERIFIED') 'Unverified login rejected'
+$usernameStyleLogin = Invoke-GraphQl -Url $gateway -Query $loginMutation -Variables @{ input = @{ identifier="authmale$suffix"; password=$password } }
+Assert-True ((Error-Code $usernameStyleLogin) -eq 'INVALID_CREDENTIALS') 'Authentication does not support username login'
 
 $verifyMutation = 'mutation($input:VerifyEmailInput!){verifyEmail(input:$input){success message}}'
 $maleOtp = Latest-Otp $maleEmail 1
@@ -107,7 +111,7 @@ $invalidVerification = Invoke-GraphQl -Url $gateway -Query $verifyMutation -Vari
 Assert-True ((Error-Code $invalidVerification) -eq 'INVALID_OR_EXPIRED_VERIFICATION_CODE') 'Invalid verification OTP rejected'
 
 $expiredEmail = "expired$suffix@example.com"
-$expiredRegister = Invoke-GraphQl -Url $auth -Query $registerMutation -Variables @{ input = @{ displayName='Expired OTP'; dob='2000-01-01'; email=$expiredEmail; gender=$false; username="expired$suffix"; password=$password } }
+$expiredRegister = Invoke-GraphQl -Url $auth -Query $registerMutation -Variables @{ input = @{ displayName='Expired OTP'; dob='2000-01-01'; email=$expiredEmail; gender=$false; password=$password } }
 Assert-True ($expiredRegister.Json.data.register.success -eq $true) 'Direct Authentication register succeeds'
 $expiredOtp = Latest-Otp $expiredEmail 1
 Psql "UPDATE fb.id_verification SET expires_at=now()-interval '1 minute' WHERE verification_id=(SELECT v.verification_id FROM fb.id_verification v JOIN fb.id_user u ON u.user_id=v.user_id WHERE u.email='$expiredEmail' AND v.type=1 ORDER BY v.created_at DESC LIMIT 1);" | Out-Null
@@ -141,7 +145,7 @@ Assert-True ($login1.Json.data.login.refreshToken -eq $null) 'Gateway scrubs raw
 Assert-True ($login1.Json.data.login.user.gender -eq $true) 'Login user includes male gender'
 Assert-True ($session1.Cookies.GetCookies($gatewayOrigin)['fb_refresh'].HttpOnly) 'Gateway sets HttpOnly refresh cookie'
 
-$me = Invoke-GraphQl -Url $gateway -Query 'query{me{userId email username dob displayName gender status}}' -Token $token1 -Session $session1
+$me = Invoke-GraphQl -Url $gateway -Query 'query{me{userId email dob displayName gender validDate status}}' -Token $token1 -Session $session1
 Assert-True ($me.Json.data.me.gender -eq $true) 'Authenticated me includes gender'
 $active = Invoke-GraphQl -Url $gateway -Query 'query{mySessions{sessionId isCurrent revokedAt}}' -Token $token1 -Session $session1
 Assert-True ($active.Json.data.mySessions.Count -eq 1 -and $active.Json.data.mySessions[0].isCurrent) 'mySessions returns current session'
@@ -155,7 +159,7 @@ Assert-True ($refresh.Json.data.refreshToken.refreshToken -eq $null) 'Refresh re
 $oldCookie = $null; $newCookie = $null
 
 $session2 = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
-$login2 = Invoke-GraphQl -Url $gateway -Query $loginMutation -Variables @{ input=@{identifier=$maleUser;password=$password} } -Session $session2
+$login2 = Invoke-GraphQl -Url $gateway -Query $loginMutation -Variables @{ input=@{identifier=$maleEmail;password=$password} } -Session $session2
 $token2 = $login2.Json.data.login.accessToken
 $active = Invoke-GraphQl -Url $gateway -Query 'query{mySessions{sessionId isCurrent}}' -Token $token1 -Session $session1
 Assert-True ($active.Json.data.mySessions.Count -ge 2) 'Multiple active sessions listed'
@@ -234,6 +238,22 @@ Assert-True ($wrongInternalSecret.StatusCode -eq 400) '/internal/users rejects w
 $createdInternal = Invoke-WebRequest "$authOrigin/internal/users" -Method Post -ContentType 'application/json' -Headers @{'X-Gateway-Secret'=$GatewaySecret} -Body $internalBody -SkipHttpErrorCheck
 Assert-True ($createdInternal.StatusCode -eq 200) '/internal/users accepts correct secret'
 Assert-True ((Psql "SELECT gender::text FROM fb.id_user WHERE email='$internalEmail';") -eq 'false') '/internal/users persists gender false'
+
+$paymentQuery = 'query($userId:ID!){paymentPremiumState(userId:$userId){userId validDate}}'
+$paymentMutation = 'mutation($input:SetPaymentValidDateInput!){setPaymentValidDate(input:$input){userId validDate}}'
+$paymentWrong = Invoke-GraphQl -Url $auth -Query $paymentQuery -Variables @{userId="$internalUserId"} -ExtraHeaders @{'X-Payment-Secret'='wrong'}
+Assert-True ((Error-Code $paymentWrong) -eq 'FORBIDDEN') 'Payment Premium query rejects wrong secret'
+$laterValidDate = [DateTimeOffset]::UtcNow.AddDays(30).ToString('o')
+$paymentSet = Invoke-GraphQl -Url $auth -Query $paymentMutation -Variables @{input=@{userId="$internalUserId";validDate=$laterValidDate}} -ExtraHeaders @{'X-Payment-Secret'=$PaymentSecret}
+Assert-True ([DateTimeOffset]::Parse($paymentSet.Json.data.setPaymentValidDate.validDate) -eq [DateTimeOffset]::Parse($laterValidDate)) 'Payment sets Premium validDate'
+$updatedAfterExtension = Psql "SELECT updated_at::text FROM fb.id_user WHERE user_id=$internalUserId;"
+$earlierValidDate = [DateTimeOffset]::UtcNow.AddDays(10).ToString('o')
+$paymentRetry = Invoke-GraphQl -Url $auth -Query $paymentMutation -Variables @{input=@{userId="$internalUserId";validDate=$earlierValidDate}} -ExtraHeaders @{'X-Payment-Secret'=$PaymentSecret}
+Assert-True ([DateTimeOffset]::Parse($paymentRetry.Json.data.setPaymentValidDate.validDate) -eq [DateTimeOffset]::Parse($laterValidDate)) 'Payment retry cannot shorten Premium validity'
+$updatedAfterNoOpRetry = Psql "SELECT updated_at::text FROM fb.id_user WHERE user_id=$internalUserId;"
+Assert-True ($updatedAfterNoOpRetry -eq $updatedAfterExtension) 'Payment no-op retry does not mutate updated_at'
+$paymentRead = Invoke-GraphQl -Url $auth -Query $paymentQuery -Variables @{userId="$internalUserId"} -ExtraHeaders @{'X-Payment-Secret'=$PaymentSecret}
+Assert-True ([DateTimeOffset]::Parse($paymentRead.Json.data.paymentPremiumState.validDate) -eq [DateTimeOffset]::Parse($laterValidDate)) 'Payment reads persisted Premium validity'
 
 $internalWrong = Invoke-GraphQl -Url $auth -Query 'query($input:GatewaySessionValidationInput!){validateGatewaySession(input:$input){isValid}}' -Variables @{input=@{userId=1;sessionId=1}} -ExtraHeaders @{'X-Gateway-Secret'='wrong'}
 Assert-True ((Error-Code $internalWrong) -eq 'FORBIDDEN') 'Internal session validation rejects wrong secret'
