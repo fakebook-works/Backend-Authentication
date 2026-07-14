@@ -8,13 +8,11 @@ public interface IEmailSender
 {
     Task SendVerificationOtpAsync(
         string email,
-        string displayName,
         string otp,
         CancellationToken cancellationToken);
 
     Task SendPasswordResetOtpAsync(
         string email,
-        string displayName,
         string otp,
         CancellationToken cancellationToken);
 }
@@ -25,35 +23,30 @@ public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSende
 
     public async Task SendVerificationOtpAsync(
         string email,
-        string displayName,
         string otp,
         CancellationToken cancellationToken)
     {
         await SendOtpAsync(
             email,
-            displayName,
             "Verify your Fakebook account",
-            BuildVerificationBody(displayName, otp),
+            BuildVerificationBody(otp),
             cancellationToken);
     }
 
     public async Task SendPasswordResetOtpAsync(
         string email,
-        string displayName,
         string otp,
         CancellationToken cancellationToken)
     {
         await SendOtpAsync(
             email,
-            displayName,
             "Reset your Fakebook password",
-            BuildPasswordResetBody(displayName, otp),
+            BuildPasswordResetBody(otp),
             cancellationToken);
     }
 
     private async Task SendOtpAsync(
         string email,
-        string displayName,
         string subject,
         string body,
         CancellationToken cancellationToken)
@@ -73,7 +66,7 @@ public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSende
             IsBodyHtml = false
         };
 
-        message.To.Add(new MailAddress(email, displayName));
+        message.To.Add(new MailAddress(email));
 
         using var client = new SmtpClient(_options.Host, _options.Port)
         {
@@ -85,9 +78,9 @@ public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSende
         await client.SendMailAsync(message, cancellationToken);
     }
 
-    private static string BuildVerificationBody(string displayName, string otp) =>
+    private static string BuildVerificationBody(string otp) =>
         $"""
-        Hi {displayName},
+        Hello,
 
         Your Fakebook verification code is:
 
@@ -98,9 +91,9 @@ public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSende
         Fakebook
         """;
 
-    private static string BuildPasswordResetBody(string displayName, string otp) =>
+    private static string BuildPasswordResetBody(string otp) =>
         $"""
-        Hi {displayName},
+        Hello,
 
         Your Fakebook password reset code is:
 

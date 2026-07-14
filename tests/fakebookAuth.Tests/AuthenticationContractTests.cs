@@ -18,18 +18,17 @@ public sealed class AuthenticationContractTests
     private const string SharedSecret = "test-gateway-secret-at-least-32-bytes";
 
     [Fact]
-    public async Task Schema_IsEmailOnly_AndRequiresRegistrationAndPaymentFields()
+    public async Task Schema_IsEmailOnly_AndContainsNoProfileFields()
     {
         var schema = await ExportSchemaAsync();
 
         var registerInput = ExtractBlock(schema, "input RegisterInput");
-        Assert.Contains("dob: Date!", registerInput, StringComparison.Ordinal);
-        Assert.Contains("gender: Boolean!", registerInput, StringComparison.Ordinal);
-        Assert.DoesNotContain("username", registerInput, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("email: String!", registerInput, StringComparison.Ordinal);
+        Assert.Contains("password: String!", registerInput, StringComparison.Ordinal);
+        AssertProfileFieldsAbsent(registerInput);
 
         var userType = ExtractBlock(schema, "type UserType");
-        Assert.DoesNotContain("username", userType, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("gender: Boolean", userType, StringComparison.Ordinal);
+        AssertProfileFieldsAbsent(userType);
         Assert.Contains("validDate: DateTime", userType, StringComparison.Ordinal);
 
         var sessionValidation = ExtractBlock(schema, "type GatewaySessionValidationPayload");
@@ -40,51 +39,43 @@ public sealed class AuthenticationContractTests
     }
 
     [Fact]
-    public async Task InternalProvisioning_RejectsMissingGenderBeforeDatabaseAccess()
+    public async Task InternalProvisioning_RejectsInvalidEmailBeforeDatabaseAccess()
+    {
+        var service = CreateValidationOnlyAuthService();
+        var input = new CreateUserIdentityInput(
+            123,
+            "not-an-email",
+            "Password123!");
+
+        var exception = await Assert.ThrowsAsync<GraphQLException>(
+            () => service.CreateUserIdentityAsync(input, CancellationToken.None));
+
+        Assert.Equal("INVALID_EMAIL", exception.Errors[0].Code);
+    }
+
+    [Fact]
+    public async Task InternalProvisioning_RejectsWeakPasswordBeforeDatabaseAccess()
     {
         var service = CreateValidationOnlyAuthService();
         var input = new CreateUserIdentityInput(
             123,
             "a@example.com",
-            "Password123!",
-            "Nguyen Van A",
-            new DateOnly(2000, 1, 1),
-            Gender: null);
+            "short");
 
         var exception = await Assert.ThrowsAsync<GraphQLException>(
             () => service.CreateUserIdentityAsync(input, CancellationToken.None));
 
-        Assert.Equal("INVALID_GENDER", exception.Errors[0].Code);
+        Assert.Equal("WEAK_PASSWORD", exception.Errors[0].Code);
     }
 
     [Fact]
-    public async Task InternalProvisioning_RejectsMissingDobBeforeDatabaseAccess()
-    {
-        var service = CreateValidationOnlyAuthService();
-        var input = new CreateUserIdentityInput(
-            123,
-            "a@example.com",
-            "Password123!",
-            "Nguyen Van A",
-            Dob: null,
-            Gender: true);
-
-        var exception = await Assert.ThrowsAsync<GraphQLException>(
-            () => service.CreateUserIdentityAsync(input, CancellationToken.None));
-
-        Assert.Equal("INVALID_DOB", exception.Errors[0].Code);
-    }
-
-    [Fact]
-    public void InternalProvisioningJson_DistinguishesMissingGender()
+    public void InternalProvisioningContract_ContainsOnlyIdentityFields()
     {
         const string json = """
             {
               "userId": 123,
               "email": "a@example.com",
-              "password": "Password123!",
-              "displayName": "Nguyen Van A",
-              "dob": "2000-01-01"
+              "password": "Password123!"
             }
             """;
 
@@ -93,12 +84,17 @@ public sealed class AuthenticationContractTests
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
         Assert.NotNull(input);
-        Assert.Null(input.Gender);
-        Assert.Null(typeof(CreateUserIdentityInput).GetProperty("Username"));
+        Assert.Equal(123, input.UserId);
+        Assert.Equal(
+            ["Email", "Password", "UserId"],
+            typeof(CreateUserIdentityInput)
+                .GetProperties()
+                .Select(property => property.Name)
+                .OrderBy(name => name, StringComparer.Ordinal));
     }
 
     [Fact]
-    public void AccessToken_DoesNotContainUsernameClaim()
+    public void AccessToken_DoesNotContainProfileClaims()
     {
         var service = new TokenService(Options.Create(new JwtOptions
         {
@@ -111,12 +107,16 @@ public sealed class AuthenticationContractTests
         {
             UserId = 123,
             Email = "a@example.com",
-            DisplayName = "Nguyen Van A",
             Status = AuthConstants.StatusActive
         }, 456);
 
         using var payload = JsonDocument.Parse(WebEncoders.Base64UrlDecode(token.Split('.')[1]));
-        Assert.False(payload.RootElement.TryGetProperty("username", out _));
+        foreach (var field in ProfileFields)
+        {
+            Assert.False(payload.RootElement.TryGetProperty(field, out _));
+        }
+
+        Assert.False(payload.RootElement.TryGetProperty("name", out _));
         Assert.Equal(123, payload.RootElement.GetProperty("user_id").GetInt64());
         Assert.Equal(456, payload.RootElement.GetProperty("sid").GetInt64());
     }
@@ -143,14 +143,20 @@ public sealed class AuthenticationContractTests
     }
 
     [Fact]
-    public void DatabaseArtifacts_RemoveIdentityUsername()
+    public void DatabaseArtifacts_RemoveIdentityAndProfileFields()
     {
         var schema = File.ReadAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "schema.sql"));
-        var migration = File.ReadAllText(
+        var usernameMigration = File.ReadAllText(
             System.IO.Path.Combine(AppContext.BaseDirectory, "20260714_remove_username.sql"));
+        var profileMigration = File.ReadAllText(
+            System.IO.Path.Combine(AppContext.BaseDirectory, "20260714_remove_profile_fields.sql"));
 
-        Assert.DoesNotContain("username", schema, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("DROP COLUMN IF EXISTS username", migration, StringComparison.OrdinalIgnoreCase);
+        AssertProfileFieldsAbsent(schema);
+        Assert.DoesNotContain("display_name", schema, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("DROP COLUMN IF EXISTS username", usernameMigration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("DROP COLUMN IF EXISTS dob", profileMigration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("DROP COLUMN IF EXISTS display_name", profileMigration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("DROP COLUMN IF EXISTS gender", profileMigration, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<string> ExportSchemaAsync()
@@ -159,8 +165,7 @@ public sealed class AuthenticationContractTests
         services
             .AddGraphQLServer("Authentication")
             .AddQueryType<Query>()
-            .AddMutationType<AuthMutations>()
-            .AddType<DateType>();
+            .AddMutationType<AuthMutations>();
 
         await using var provider = services.BuildServiceProvider();
         var resolver = provider.GetRequiredService<IRequestExecutorProvider>();
@@ -175,6 +180,17 @@ public sealed class AuthenticationContractTests
         var end = schema.IndexOf("\n}", start, StringComparison.Ordinal);
         Assert.True(end > start, $"Schema declaration '{declaration}' was not terminated.");
         return schema[start..(end + 2)];
+    }
+
+    private static readonly string[] ProfileFields =
+        ["username", "displayName", "dob", "gender"];
+
+    private static void AssertProfileFieldsAbsent(string value)
+    {
+        foreach (var field in ProfileFields)
+        {
+            Assert.DoesNotContain(field, value, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private static AuthService CreateValidationOnlyAuthService()

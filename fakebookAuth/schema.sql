@@ -4,14 +4,11 @@
 CREATE SCHEMA IF NOT EXISTS fb;
 SET search_path TO fb;
 
--- 1. Bảng id_user (Hồ sơ định danh cơ bản)
+-- 1. Bảng id_user (tài khoản định danh)
 CREATE TABLE id_user (
                          user_id          bigint PRIMARY KEY,
                          email            text UNIQUE,
                          phone            text UNIQUE,
-                         dob              date,
-                         display_name     text,
-                         gender           boolean,
                          valid_date       timestamptz,
                          status           smallint NOT NULL DEFAULT 4, -- 1=active, 2=disabled, 3=deleted, 4=unverified
                          created_at       timestamptz NOT NULL DEFAULT now(),

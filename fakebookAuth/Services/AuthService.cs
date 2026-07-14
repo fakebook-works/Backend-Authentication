@@ -104,9 +104,6 @@ public sealed class AuthService(
                 {
                     UserId = userId,
                     Email = register.Email,
-                    Dob = register.Dob,
-                    DisplayName = register.DisplayName,
-                    Gender = register.Gender,
                     Status = AuthConstants.StatusUnverified
                 },
                 cancellationToken);
@@ -156,7 +153,6 @@ public sealed class AuthService(
         {
             await emailSender.SendVerificationOtpAsync(
                 register.Email,
-                register.DisplayName,
                 otp,
                 cancellationToken);
 
@@ -765,7 +761,7 @@ public sealed class AuthService(
 
             await transaction.CommitAsync(cancellationToken);
 
-            await emailSender.SendVerificationOtpAsync(user.Email, user.DisplayName, otp, cancellationToken);
+            await emailSender.SendVerificationOtpAsync(user.Email, otp, cancellationToken);
             logger.LogInformation("Email verification OTP resent for user {UserId}.", user.UserId);
             return new AuthActionPayload(true, "Verification code sent. Please check your email.");
         }
@@ -860,7 +856,6 @@ public sealed class AuthService(
         {
             await emailSender.SendPasswordResetOtpAsync(
                 userToEmail.Email,
-                userToEmail.DisplayName,
                 otpToEmail,
                 cancellationToken);
 
@@ -1112,67 +1107,24 @@ public sealed class AuthService(
 
     private static NormalizedRegisterInput NormalizeAndValidate(RegisterInput input)
     {
-        var email = NormalizeEmail(input.Email);
-        var displayName = input.DisplayName.Trim();
-
-        if (string.IsNullOrWhiteSpace(displayName))
-        {
-            throw GraphQlError("Display name is required.", "INVALID_DISPLAY_NAME");
-        }
-
-        if (!new EmailAddressAttribute().IsValid(email))
-        {
-            throw GraphQlError("Email is invalid.", "INVALID_EMAIL");
-        }
-
-        ValidatePassword(input.Password);
-
-        if (input.Dob > DateOnly.FromDateTime(DateTime.UtcNow))
-        {
-            throw GraphQlError("Date of birth is invalid.", "INVALID_DOB");
-        }
-
-        return new NormalizedRegisterInput(displayName, input.Dob, email, input.Password, input.Gender);
+        return NormalizeAndValidate(input.Email, input.Password);
     }
 
     private static NormalizedRegisterInput NormalizeAndValidate(CreateUserIdentityInput input)
     {
-        var email = NormalizeEmail(input.Email);
-        var displayName = input.DisplayName.Trim();
+        return NormalizeAndValidate(input.Email, input.Password);
+    }
 
-        if (string.IsNullOrWhiteSpace(displayName))
-        {
-            throw GraphQlError("Display name is required.", "INVALID_DISPLAY_NAME");
-        }
-
+    private static NormalizedRegisterInput NormalizeAndValidate(string emailValue, string password)
+    {
+        var email = NormalizeEmail(emailValue);
         if (!new EmailAddressAttribute().IsValid(email))
         {
             throw GraphQlError("Email is invalid.", "INVALID_EMAIL");
         }
 
-        if (input.Dob is null)
-        {
-            throw GraphQlError("Date of birth is required.", "INVALID_DOB");
-        }
-
-        ValidatePassword(input.Password);
-
-        if (input.Dob.Value > DateOnly.FromDateTime(DateTime.UtcNow))
-        {
-            throw GraphQlError("Date of birth is invalid.", "INVALID_DOB");
-        }
-
-        if (input.Gender is null)
-        {
-            throw GraphQlError("Gender is required.", "INVALID_GENDER");
-        }
-
-        return new NormalizedRegisterInput(
-            displayName,
-            input.Dob.Value,
-            email,
-            input.Password,
-            input.Gender.Value);
+        ValidatePassword(password);
+        return new NormalizedRegisterInput(email, password);
     }
 
     private static string NormalizeEmail(string value) => value.Trim().ToLowerInvariant();
@@ -1499,10 +1451,5 @@ public sealed class AuthService(
             Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
     }
 
-    private sealed record NormalizedRegisterInput(
-        string DisplayName,
-        DateOnly Dob,
-        string Email,
-        string Password,
-        bool Gender);
+    private sealed record NormalizedRegisterInput(string Email, string Password);
 }

@@ -2,23 +2,14 @@ using HotChocolate.Types;
 
 namespace fakebookAuth;
 
-public sealed record RegisterInput(
-    string DisplayName,
-    [property: GraphQLType(typeof(NonNullType<DateType>))]
-    DateOnly Dob,
-    string Email,
-    bool Gender,
-    string Password);
+public sealed record RegisterInput(string Email, string Password);
 
 public sealed record RegisterPayload(bool Success, string? Message);
 
 public sealed record CreateUserIdentityInput(
     long UserId,
     string Email,
-    string Password,
-    string DisplayName,
-    DateOnly? Dob,
-    bool? Gender);
+    string Password);
 
 public sealed record VerifyEmailInput(string Identifier, string Otp);
 
@@ -90,10 +81,6 @@ public sealed record LoginPayload(
 public sealed record UserType(
     long UserId,
     string Email,
-    [property: GraphQLType(typeof(DateType))]
-    DateOnly? Dob,
-    string DisplayName,
-    bool? Gender,
     [property: GraphQLType(typeof(DateTimeType))]
     DateTimeOffset? ValidDate,
     short Status);

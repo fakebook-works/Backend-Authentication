@@ -79,17 +79,14 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO fb.id_user (user_id, email, dob, display_name, gender, status)
-            VALUES (@UserId, @Email, @Dob, @DisplayName, @Gender, @Status);
+            INSERT INTO fb.id_user (user_id, email, status)
+            VALUES (@UserId, @Email, @Status);
             """;
 
         var parameters = new
         {
             user.UserId,
             user.Email,
-            Dob = user.Dob?.ToDateTime(TimeOnly.MinValue),
-            user.DisplayName,
-            user.Gender,
             user.Status
         };
 
@@ -196,9 +193,6 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
             user_id AS UserId,
             email AS Email,
             phone AS Phone,
-            dob AS Dob,
-            display_name AS DisplayName,
-            gender AS Gender,
             valid_date AS ValidDate,
             status AS Status,
             created_at AS CreatedAt,
@@ -218,9 +212,6 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
             UserId = user.UserId,
             Email = user.Email,
             Phone = user.Phone,
-            Dob = user.Dob,
-            DisplayName = user.DisplayName,
-            Gender = user.Gender,
             ValidDate = user.ValidDate,
             Status = user.Status,
             CreatedAt = user.CreatedAt,
@@ -232,9 +223,6 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         public long UserId { get; set; }
         public string Email { get; set; } = string.Empty;
         public string? Phone { get; set; }
-        public DateOnly? Dob { get; set; }
-        public string DisplayName { get; set; } = string.Empty;
-        public bool? Gender { get; set; }
         public DateTimeOffset? ValidDate { get; set; }
         public short Status { get; set; }
         public DateTimeOffset CreatedAt { get; set; }

@@ -1,0 +1,8 @@
+BEGIN;
+
+ALTER TABLE fb.id_user
+    DROP COLUMN IF EXISTS dob,
+    DROP COLUMN IF EXISTS display_name,
+    DROP COLUMN IF EXISTS gender;
+
+COMMIT;

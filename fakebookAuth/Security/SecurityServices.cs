@@ -61,7 +61,6 @@ public sealed class TokenService(IOptions<JwtOptions> options) : ITokenService
             ["aud"] = _options.Audience,
             ["sub"] = user.UserId.ToString(CultureInfo.InvariantCulture),
             ["user_id"] = user.UserId,
-            ["name"] = user.DisplayName,
             ["iat"] = now.ToUnixTimeSeconds(),
             ["nbf"] = now.ToUnixTimeSeconds(),
             ["exp"] = expiresAt.ToUnixTimeSeconds(),

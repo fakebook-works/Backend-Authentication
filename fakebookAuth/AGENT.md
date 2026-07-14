@@ -113,7 +113,7 @@ The schema is under PostgreSQL schema `fb`.
 
 Core tables:
 
-- `fb.id_user`: user identity profile.
+- `fb.id_user`: authentication identity account.
 - `fb.id_credential`: password credential hash.
 - `fb.id_session`: active/revoked session state and current refresh token hash.
 - `fb.id_session_refresh_token`: refresh token history for reuse detection.
@@ -122,15 +122,16 @@ Core tables:
 - `fb.id_role`, `fb.id_permission`, `fb.id_role_permission`, `fb.id_user_role`: role/permission placeholders.
 - `fb.id_mfa_method`: MFA placeholder.
 
-Authentication is email-only. SocialGraph owns usernames; `fb.id_user` has no username column or index. Existing databases must apply, in order:
+Authentication is email-only. SocialGraph exclusively owns username, name, birthdate, gender, location, and other profile data. Migration history is immutable and existing databases must reach this final order:
 
 ```text
 migrations/20260713_add_gender.sql
 migrations/20260713_add_valid_date.sql
 migrations/20260714_remove_username.sql
+migrations/20260714_remove_profile_fields.sql
 ```
 
-For a rolling deployment, apply the two additive migrations first, deploy this Auth version, drain every old Auth instance, and only then run `20260714_remove_username.sql`. The new code tolerates the old column; old code does not tolerate its removal.
+`20260713_add_gender.sql` is retained as historical migration input and is superseded by `20260714_remove_profile_fields.sql`. For a rolling deployment, deploy this profile-free Auth version, drain every old Auth instance, and only then run the destructive removal migrations. Fresh databases use `schema.sql`, which already omits all profile columns.
 
 User status values:
 
@@ -366,9 +367,6 @@ query Me {
   me {
     userId
     email
-    dob
-    displayName
-    gender
     validDate
     status
   }
@@ -472,10 +470,7 @@ Payload:
 {
   "userId": 1234567890123456789,
   "email": "a@example.com",
-  "password": "at-least-8-chars",
-  "displayName": "Nguyen Van A",
-  "dob": "2000-01-01",
-  "gender": true
+  "password": "at-least-8-chars"
 }
 ```
 
@@ -484,8 +479,7 @@ Behavior:
 - Creates `id_user` with the supplied `userId`.
 - Creates password credential and email verification OTP.
 - Keeps the account `unverified` until `verifyEmail`.
-- Requires both DOB and gender; missing values are rejected before database access.
-- Does not accept or persist a username. SocialGraph owns that field.
+- Does not accept or persist username, display name, DOB, or gender. SocialGraph owns those fields.
 - Rejects missing or invalid `X-Gateway-Secret`.
 
 ## GraphQL Mutations
@@ -510,10 +504,7 @@ Variables:
 ```json
 {
   "input": {
-    "displayName": "Quan Trieu",
-    "dob": "2000-01-01",
     "email": "quan@example.com",
-    "gender": true,
     "password": "Password123!"
   }
 }
@@ -522,7 +513,6 @@ Variables:
 Notes:
 
 - Email is normalized to lower-case.
-- Gender is required: `true` means Male and `false` means Female.
 - Password minimum length is 8.
 - New users start with `status = 4` (unverified).
 - If SMTP is enabled, OTP is emailed.
@@ -613,8 +603,6 @@ mutation Login($input: LoginInput!) {
     user {
       userId
       email
-      displayName
-      gender
       validDate
       status
     }
@@ -664,7 +652,6 @@ mutation RefreshToken($input: RefreshTokenInput!) {
     user {
       userId
       email
-      gender
       validDate
     }
   }
@@ -922,18 +909,12 @@ type LoginPayload {
 type UserType {
   userId: Long!
   email: String!
-  dob: Date
-  displayName: String!
-  gender: Boolean
   validDate: DateTime
   status: Short!
 }
 
 input RegisterInput {
-  displayName: String!
-  dob: Date!
   email: String!
-  gender: Boolean!
   password: String!
 }
 
@@ -975,10 +956,7 @@ Validation and identity:
 
 ```text
 IDENTIFIER_EXISTS
-INVALID_DISPLAY_NAME
 INVALID_EMAIL
-INVALID_GENDER
-INVALID_DOB
 WEAK_PASSWORD
 INVALID_CREDENTIALS
 ACCOUNT_NOT_FOUND
@@ -1062,8 +1040,8 @@ Examples:
 1. Client submits name, gender, birthdate, location, email, and password to Gateway createUser.
 2. Gateway routes createUser to SocialGraph through Fusion.
 3. SocialGraph creates the profile object and canonical Snowflake userId.
-4. SocialGraph calls Auth POST /internal/users with that userId and X-Gateway-Secret.
-5. Auth creates the unverified email identity with the supplied userId, stores the boolean gender value and password hash, and stores no username.
+4. SocialGraph calls Auth POST /internal/users with that userId, email, password, and X-Gateway-Secret; profile fields remain in SocialGraph.
+5. Auth creates the unverified email identity with the supplied userId and password hash.
 6. Auth creates the verification OTP hash and sends email when SMTP is enabled.
 7. If Auth fails, SocialGraph deletes the new profile object and returns a failed CreateUserPayload.
 8. If Auth succeeds, SocialGraph concurrently calls Search `PUT /internal/search/indexes/{userId}` and Recommendation `PUT /internal/recommendation/users/{userId}/embedding` with the same ID/correlation ID.
@@ -1111,7 +1089,7 @@ logoutSession:
 
 Automated `dotnet test fakebookAuth.sln` contract tests and the broader E2E runner cover:
 
-- Gateway `createUser` through SocialGraph with gender + verify email
+- Gateway `createUser` through SocialGraph while Auth receives no profile fields, followed by email verification
 - internal custom-userId creation used by SocialGraph
 - login
 - refresh token rotation
@@ -1134,7 +1112,7 @@ Automated `dotnet test fakebookAuth.sln` contract tests and the broader E2E runn
 - multi-device session behavior
 - Gateway proxy login/refresh/logout cookie behavior
 
-The reproducible local E2E runner is `scripts/auth-gateway-e2e.ps1`. Pass `-PaymentSecret` with the same value as Auth `Payment__InternalSharedSecret`. It validates Auth/SocialGraph/Gateway/Payment integration and does not print OTPs, access tokens, refresh tokens, or cookie values. The permanent test project validates schema nullability, missing internal DOB/gender rejection, JWT claims, UTC Payment dates, and database artifacts without external infrastructure.
+The reproducible local E2E runner is `scripts/auth-gateway-e2e.ps1`. Pass `-PaymentSecret` with the same value as Auth `Payment__InternalSharedSecret`. It validates Auth/SocialGraph/Gateway/Payment integration and does not print OTPs, access tokens, refresh tokens, or cookie values. The permanent test project validates the profile-free Auth schema/internal payload/JWT, UTC Payment dates, and database artifacts without external infrastructure.
 
 ## Backend-Payment Internal Contract
 

@@ -1,6 +1,6 @@
 # Fakebook Authentication Subgraph
 
-Authentication and identity subgraph for Fakebook. This service owns credentials and identity creation, email verification, login, refresh token rotation, session management, password reset, password change, OTP limits, and authentication audit events. SocialGraph orchestrates the normal public registration flow and owns the canonical user ID.
+Authentication and identity subgraph for Fakebook. This service owns credentials and identity creation, email verification, login, refresh token rotation, session management, password reset, password change, OTP limits, and authentication audit events. SocialGraph orchestrates normal public registration and exclusively owns user profile fields such as name, birthdate, gender, and location.
 
 It is designed to run behind a GraphQL Federation Gateway. The Gateway should be the public entry point, while this subgraph remains responsible for credentials, sessions, JWT issuing, refresh token validation, and cookie instructions.
 
@@ -178,7 +178,9 @@ resetPassword(input: ResetPasswordInput!): AuthActionPayload!
 changePassword(input: ChangePasswordInput!): AuthActionPayload!
 ```
 
-`register` is available for direct Authentication testing and backward compatibility, but the Gateway marks it `@internal`. Normal frontend registration must call SocialGraph `createUser`. Authentication registration requires display name, date of birth, email, gender, and password; Authentication does not store or validate SocialGraph usernames.
+`register` is available for direct Authentication testing and backward compatibility, but the Gateway marks it `@internal`. It accepts only `email` and `password`. Normal frontend registration must call SocialGraph `createUser` so the canonical user ID and profile are created before Auth credentials.
+
+`UserType` contains only `userId`, `email`, `validDate`, and `status`. Name, username, birthdate, gender, location, avatar, and other profile data must be queried from SocialGraph.
 
 Protected operations require:
 
@@ -201,21 +203,9 @@ Body:
 {
   "userId": 1234567890123456789,
   "email": "a@example.com",
-  "password": "at-least-8-chars",
-  "displayName": "Nguyen Van A",
-  "dob": "2000-01-01",
-  "gender": true
+  "password": "at-least-8-chars"
 }
 ```
-
-Gender uses a binary boolean contract throughout Authentication:
-
-```text
-true  = Male
-false = Female
-```
-
-The Auth-only GraphQL `register` mutation also requires `gender`. Existing identity rows created before the gender migration may return `gender = null` from `UserType`.
 
 This endpoint creates an unverified user, password credential, and email verification OTP using the supplied `userId`. It is internal-only and rejects calls without the shared secret.
 
@@ -229,7 +219,7 @@ Recommended flow:
 Registration:
   Frontend -> Gateway createUser -> SocialGraph
   SocialGraph generates canonical userId and calls Auth POST /internal/users
-  Auth creates the unverified identity with gender, password credential, and verification OTP
+  Auth creates the unverified email identity, password credential, and verification OTP
   SocialGraph rolls back its user object if the required Auth call fails
   After Auth succeeds, SocialGraph concurrently provisions:
     Search PUT /internal/search/indexes/{userId}
@@ -254,7 +244,7 @@ Logout:
   Gateway clears cookie when instruction operation is CLEAR
 ```
 
-Other subgraphs should not read browser cookies. They receive trusted identity context from the Gateway as user id, session id, shared secret, and correlation id. Username/profile lookups belong to SocialGraph and are not carried in Auth JWTs or trusted headers.
+Other subgraphs should not read browser cookies. They receive trusted identity context from the Gateway as user id, session id, shared secret, and correlation id. All profile lookups belong to SocialGraph and are not persisted by Auth or carried in Auth JWTs/trusted headers.
 
 ## Payment Premium Validity
 
@@ -274,14 +264,16 @@ Configure `Payment__InternalSharedSecret` independently from the Gateway secret.
 
 ## Existing Database Migration
 
-Apply the additive migrations before deploying this version because Auth user reads select `gender` and `valid_date`:
+The migration history remains immutable even though production has not been deployed. The final schema after applying the history contains `valid_date` but no username or SocialGraph profile columns:
 
 ```text
 fakebookAuth/migrations/20260713_add_gender.sql
 fakebookAuth/migrations/20260713_add_valid_date.sql
+fakebookAuth/migrations/20260714_remove_username.sql
+fakebookAuth/migrations/20260714_remove_profile_fields.sql
 ```
 
-For a zero-downtime rollout, deploy the SocialGraph payload change that sends `gender` first, apply the two additive migrations, then deploy Authentication and the recomposed Gateway. Older Authentication versions ignore the additional REST JSON property. After every old Authentication instance has stopped, apply the destructive `fakebookAuth/migrations/20260714_remove_username.sql` migration; the new version works while the old column is still present. In a maintenance-window deployment, all three migrations may run in filename order before starting the new application version.
+Fresh databases should use `schema.sql`, which already omits `username`, `dob`, `display_name`, and `gender`. Existing development databases should run the two removal migrations. If this is ever rolled out while an old Auth version is still running, deploy the profile-free Auth contract first, drain old instances, and only then drop the columns; the new code tolerates the old columns, while old code does not tolerate their removal.
 
 ## Security Notes
 
@@ -291,7 +283,7 @@ For a zero-downtime rollout, deploy the SocialGraph payload change that sends `g
 - Reusing an old refresh token from an active session revokes all sessions.
 - Using a token from an already revoked or expired session only returns `INVALID_REFRESH_TOKEN`.
 - Access tokens include `sid`; protected auth operations reject revoked or expired sessions.
-- Access tokens contain `user_id`, `sid`, and display name, but no SocialGraph username.
+- Access tokens contain authentication identifiers such as `user_id` and `sid`, but no SocialGraph profile claims.
 - Keep access tokens short-lived and refresh tokens in HttpOnly Secure cookies.
 
 ## More Documentation
@@ -301,4 +293,4 @@ For detailed developer and AI agent guidance, see:
 - `fakebookAuth/AGENT.md`
 - `fakebookAuth/AGENT_VIE.md`
 
-Automated contract tests run with `dotnet test fakebookAuth.sln`. The broader `scripts/auth-gateway-e2e.ps1` suite expects Auth, SocialGraph, Gateway, Payment dependencies, and a PostgreSQL Docker container; pass `-PaymentSecret` with the same value as Auth `Payment__InternalSharedSecret`. It covers canonical registration, gender propagation, OTP, email-only login, JWT/session, Payment validity, refresh cookies, password flows, logout, and spoofing without printing OTPs or tokens.
+Automated contract tests run with `dotnet test fakebookAuth.sln`. The broader `scripts/auth-gateway-e2e.ps1` suite expects Auth, SocialGraph, Gateway, Payment dependencies, and a PostgreSQL Docker container; pass `-PaymentSecret` with the same value as Auth `Payment__InternalSharedSecret`. It covers canonical registration, profile-field isolation, OTP, email-only login, JWT/session, Payment validity, refresh cookies, password flows, logout, and spoofing without printing OTPs or tokens.

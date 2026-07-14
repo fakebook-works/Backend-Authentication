@@ -100,8 +100,7 @@ public static class Program
             .AddGraphQLServer("Authentication")
             .ModifyRequestOptions(options => options.IncludeExceptionDetails = builder.Environment.IsDevelopment())
             .AddQueryType<Query>()
-            .AddMutationType<AuthMutations>()
-            .AddType<DateType>();
+            .AddMutationType<AuthMutations>();
 
         var app = builder.Build();
 

@@ -113,7 +113,7 @@ Schema PostgreSQL là `fb`.
 
 Các bảng chính:
 
-- `fb.id_user`: hồ sơ định danh user.
+- `fb.id_user`: tài khoản định danh phục vụ authentication.
 - `fb.id_credential`: credential đăng nhập, hiện dùng password hash.
 - `fb.id_session`: trạng thái session, refresh token hash hiện tại, revoke state.
 - `fb.id_session_refresh_token`: lịch sử refresh token để phát hiện reuse.
@@ -122,15 +122,16 @@ Các bảng chính:
 - `fb.id_role`, `fb.id_permission`, `fb.id_role_permission`, `fb.id_user_role`: khung role/permission.
 - `fb.id_mfa_method`: khung MFA.
 
-Authentication chỉ định danh bằng email. SocialGraph sở hữu username; `fb.id_user` không còn cột hoặc index username. Database hiện có phải chạy lần lượt:
+Authentication chỉ định danh bằng email. SocialGraph sở hữu riêng username, name, birthdate, gender, location và toàn bộ profile data khác. Migration history được giữ bất biến và database hiện có phải đạt thứ tự cuối cùng sau:
 
 ```text
 migrations/20260713_add_gender.sql
 migrations/20260713_add_valid_date.sql
 migrations/20260714_remove_username.sql
+migrations/20260714_remove_profile_fields.sql
 ```
 
-Nếu rolling deployment, chạy hai migration additive trước, deploy Auth version này, drain toàn bộ Auth instance cũ, rồi mới chạy `20260714_remove_username.sql`. Code mới vẫn chạy khi cột cũ còn tồn tại; code cũ sẽ lỗi ngay sau khi cột bị xóa.
+`20260713_add_gender.sql` được giữ lại như migration history và bị supersede bởi `20260714_remove_profile_fields.sql`. Nếu rolling deployment, deploy Auth profile-free này, drain toàn bộ Auth instance cũ, rồi mới chạy các migration destructive. Database mới dùng `schema.sql`, vốn đã không còn profile column.
 
 Giá trị `id_user.status`:
 
@@ -366,9 +367,6 @@ query Me {
   me {
     userId
     email
-    dob
-    displayName
-    gender
     validDate
     status
   }
@@ -472,10 +470,7 @@ Payload:
 {
   "userId": 1234567890123456789,
   "email": "a@example.com",
-  "password": "at-least-8-chars",
-  "displayName": "Nguyen Van A",
-  "dob": "2000-01-01",
-  "gender": true
+  "password": "at-least-8-chars"
 }
 ```
 
@@ -484,8 +479,7 @@ Hành vi:
 - Tạo `id_user` với đúng `userId` được truyền vào.
 - Tạo password credential và OTP verify email.
 - Giữ account ở trạng thái `unverified` cho đến khi gọi `verifyEmail`.
-- Bắt buộc DOB và gender; giá trị thiếu bị reject trước khi truy cập database.
-- Không nhận hoặc lưu username. SocialGraph sở hữu field này.
+- Không nhận hoặc lưu username, display name, DOB hay gender. SocialGraph sở hữu các field đó.
 - Thiếu hoặc sai `X-Gateway-Secret` sẽ bị reject.
 
 ## GraphQL Mutations
@@ -510,10 +504,7 @@ Variables:
 ```json
 {
   "input": {
-    "displayName": "Quan Trieu",
-    "dob": "2000-01-01",
     "email": "quan@example.com",
-    "gender": true,
     "password": "Password123!"
   }
 }
@@ -522,7 +513,6 @@ Variables:
 Lưu ý:
 
 - Email được normalize về lower-case.
-- Gender là bắt buộc: `true` là Nam và `false` là Nữ.
 - Password tối thiểu 8 ký tự.
 - User mới có `status = 4` (unverified).
 - Nếu SMTP enabled, OTP sẽ được gửi qua email.
@@ -613,8 +603,6 @@ mutation Login($input: LoginInput!) {
     user {
       userId
       email
-      displayName
-      gender
       validDate
       status
     }
@@ -664,7 +652,6 @@ mutation RefreshToken($input: RefreshTokenInput!) {
     user {
       userId
       email
-      gender
       validDate
     }
   }
@@ -922,18 +909,12 @@ type LoginPayload {
 type UserType {
   userId: Long!
   email: String!
-  dob: Date
-  displayName: String!
-  gender: Boolean
   validDate: DateTime
   status: Short!
 }
 
 input RegisterInput {
-  displayName: String!
-  dob: Date!
   email: String!
-  gender: Boolean!
   password: String!
 }
 
@@ -975,10 +956,7 @@ Validation và identity:
 
 ```text
 IDENTIFIER_EXISTS
-INVALID_DISPLAY_NAME
 INVALID_EMAIL
-INVALID_GENDER
-INVALID_DOB
 WEAK_PASSWORD
 INVALID_CREDENTIALS
 ACCOUNT_NOT_FOUND
@@ -1062,8 +1040,8 @@ Ví dụ:
 1. Client gửi name, gender, birthdate, location, email và password tới Gateway createUser.
 2. Gateway route createUser sang SocialGraph qua Fusion.
 3. SocialGraph tạo profile object và canonical Snowflake userId.
-4. SocialGraph gọi Auth POST /internal/users với userId đó và X-Gateway-Secret.
-5. Auth tạo email identity unverified bằng đúng userId được truyền, lưu boolean gender và password hash, không lưu username.
+4. SocialGraph gọi Auth POST /internal/users với userId, email, password và X-Gateway-Secret; profile field vẫn nằm tại SocialGraph.
+5. Auth tạo email identity unverified bằng đúng userId được truyền và lưu password hash.
 6. Auth tạo verification OTP hash và gửi email nếu SMTP enabled.
 7. Nếu Auth lỗi, SocialGraph xóa profile object vừa tạo và trả CreateUserPayload thất bại.
 8. Nếu Auth thành công, SocialGraph gọi đồng thời Search `PUT /internal/search/indexes/{userId}` và Recommendation `PUT /internal/recommendation/users/{userId}/embedding` bằng cùng ID/correlation ID.
@@ -1111,7 +1089,7 @@ logoutSession:
 
 Contract test tự động `dotnet test fakebookAuth.sln` và E2E runner rộng hơn cover:
 
-- Gateway `createUser` qua SocialGraph có gender + verify email
+- Gateway `createUser` qua SocialGraph trong khi Auth không nhận profile field, sau đó verify email
 - internal create bằng custom userId cho SocialGraph
 - login
 - refresh token rotation
@@ -1134,7 +1112,7 @@ Contract test tự động `dotnet test fakebookAuth.sln` và E2E runner rộng 
 - multi-device session behavior
 - Gateway proxy login/refresh/logout cookie behavior
 
-Local E2E runner nằm tại `scripts/auth-gateway-e2e.ps1`. Truyền `-PaymentSecret` cùng giá trị với Auth `Payment__InternalSharedSecret`. Script kiểm tra integration Auth/SocialGraph/Gateway/Payment và không print OTP, access token, refresh token hay cookie value. Test project cố định kiểm tra schema nullability, reject DOB/gender bị thiếu, JWT claims, UTC Payment date và database artifact mà không cần hạ tầng ngoài.
+Local E2E runner nằm tại `scripts/auth-gateway-e2e.ps1`. Truyền `-PaymentSecret` cùng giá trị với Auth `Payment__InternalSharedSecret`. Script kiểm tra integration Auth/SocialGraph/Gateway/Payment và không print OTP, access token, refresh token hay cookie value. Test project cố định kiểm tra Auth schema/internal payload/JWT không có profile field, UTC Payment date và database artifact mà không cần hạ tầng ngoài.
 
 ## Contract Nội bộ với Backend-Payment
 
