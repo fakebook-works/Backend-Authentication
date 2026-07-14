@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using fakebookAuth;
 using HotChocolate;
 using HotChocolate.Execution;
@@ -18,21 +19,21 @@ public sealed class AuthenticationContractTests
     private const string SharedSecret = "test-gateway-secret-at-least-32-bytes";
 
     [Fact]
-    public async Task Schema_IsEmailOnly_AndContainsNoProfileFields()
+    public async Task Schema_IsEmailOnly_AndContainsNoUnsupportedIdentityFields()
     {
         var schema = await ExportSchemaAsync();
 
         var registerInput = ExtractBlock(schema, "input RegisterInput");
         Assert.Contains("email: String!", registerInput, StringComparison.Ordinal);
         Assert.Contains("password: String!", registerInput, StringComparison.Ordinal);
-        AssertProfileFieldsAbsent(registerInput);
+        AssertUnsupportedIdentityFieldsAbsent(registerInput);
 
         var userType = ExtractBlock(schema, "type UserType");
-        AssertProfileFieldsAbsent(userType);
+        AssertUnsupportedIdentityFieldsAbsent(userType);
         Assert.Contains("validDate: DateTime", userType, StringComparison.Ordinal);
 
         var sessionValidation = ExtractBlock(schema, "type GatewaySessionValidationPayload");
-        Assert.DoesNotContain("username", sessionValidation, StringComparison.OrdinalIgnoreCase);
+        AssertUnsupportedIdentityFieldsAbsent(sessionValidation);
 
         var paymentInput = ExtractBlock(schema, "input SetPaymentValidDateInput");
         Assert.Contains("validDate: DateTime!", paymentInput, StringComparison.Ordinal);
@@ -94,7 +95,7 @@ public sealed class AuthenticationContractTests
     }
 
     [Fact]
-    public void AccessToken_DoesNotContainProfileClaims()
+    public void AccessToken_DoesNotContainUnsupportedIdentityClaims()
     {
         var service = new TokenService(Options.Create(new JwtOptions
         {
@@ -111,7 +112,7 @@ public sealed class AuthenticationContractTests
         }, 456);
 
         using var payload = JsonDocument.Parse(WebEncoders.Base64UrlDecode(token.Split('.')[1]));
-        foreach (var field in ProfileFields)
+        foreach (var field in UnsupportedIdentityFields)
         {
             Assert.False(payload.RootElement.TryGetProperty(field, out _));
         }
@@ -143,17 +144,23 @@ public sealed class AuthenticationContractTests
     }
 
     [Fact]
-    public void DatabaseArtifacts_RemoveIdentityAndProfileFields()
+    public void DatabaseArtifacts_RemoveUnusedIdentityAndProfileFields()
     {
         var schema = File.ReadAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "schema.sql"));
         var usernameMigration = File.ReadAllText(
             System.IO.Path.Combine(AppContext.BaseDirectory, "20260714_remove_username.sql"));
         var profileMigration = File.ReadAllText(
             System.IO.Path.Combine(AppContext.BaseDirectory, "20260714_remove_profile_fields.sql"));
+        var phoneMigration = File.ReadAllText(
+            System.IO.Path.Combine(AppContext.BaseDirectory, "20260714_remove_phone.sql"));
 
-        AssertProfileFieldsAbsent(schema);
+        AssertUnsupportedIdentityFieldsAbsent(schema);
         Assert.DoesNotContain("display_name", schema, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("id_user_phone_idx", schema, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(typeof(IdentityUser).GetProperty("Phone"));
         Assert.Contains("DROP COLUMN IF EXISTS username", usernameMigration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("DROP INDEX IF EXISTS fb.id_user_phone_idx", phoneMigration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("DROP COLUMN IF EXISTS phone", phoneMigration, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("DROP COLUMN IF EXISTS dob", profileMigration, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("DROP COLUMN IF EXISTS display_name", profileMigration, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("DROP COLUMN IF EXISTS gender", profileMigration, StringComparison.OrdinalIgnoreCase);
@@ -182,14 +189,16 @@ public sealed class AuthenticationContractTests
         return schema[start..(end + 2)];
     }
 
-    private static readonly string[] ProfileFields =
-        ["username", "displayName", "dob", "gender"];
+    private static readonly string[] UnsupportedIdentityFields =
+        ["username", "phone", "displayName", "dob", "gender"];
 
-    private static void AssertProfileFieldsAbsent(string value)
+    private static void AssertUnsupportedIdentityFieldsAbsent(string value)
     {
-        foreach (var field in ProfileFields)
+        foreach (var field in UnsupportedIdentityFields)
         {
-            Assert.DoesNotContain(field, value, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotMatch(
+                new Regex($@"\b{Regex.Escape(field)}\b", RegexOptions.IgnoreCase),
+                value);
         }
     }
 

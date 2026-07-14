@@ -192,7 +192,6 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         SELECT
             user_id AS UserId,
             email AS Email,
-            phone AS Phone,
             valid_date AS ValidDate,
             status AS Status,
             created_at AS CreatedAt,
@@ -211,7 +210,6 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         {
             UserId = user.UserId,
             Email = user.Email,
-            Phone = user.Phone,
             ValidDate = user.ValidDate,
             Status = user.Status,
             CreatedAt = user.CreatedAt,
@@ -222,7 +220,6 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
     {
         public long UserId { get; set; }
         public string Email { get; set; } = string.Empty;
-        public string? Phone { get; set; }
         public DateTimeOffset? ValidDate { get; set; }
         public short Status { get; set; }
         public DateTimeOffset CreatedAt { get; set; }

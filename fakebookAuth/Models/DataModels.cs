@@ -18,7 +18,6 @@ public sealed class IdentityUser
 {
     public long UserId { get; set; }
     public string Email { get; set; } = string.Empty;
-    public string? Phone { get; set; }
     public DateTimeOffset? ValidDate { get; set; }
     public short Status { get; set; }
     public DateTimeOffset CreatedAt { get; set; }

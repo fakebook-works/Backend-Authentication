@@ -71,8 +71,9 @@ Run-MigrationTwice 'fakebookAuth\migrations\20260713_add_gender.sql' 'gender'
 Run-MigrationTwice 'fakebookAuth\migrations\20260713_add_valid_date.sql' 'valid_date'
 Run-MigrationTwice 'fakebookAuth\migrations\20260714_remove_username.sql' 'remove_username'
 Run-MigrationTwice 'fakebookAuth\migrations\20260714_remove_profile_fields.sql' 'remove_profile_fields'
-$removedColumnCount = Psql "SELECT count(*) FROM information_schema.columns WHERE table_schema='fb' AND table_name='id_user' AND column_name IN ('username','dob','display_name','gender');"
-Assert-True ($removedColumnCount -eq '0') 'Authentication schema has no username or SocialGraph profile columns'
+Run-MigrationTwice 'fakebookAuth\migrations\20260714_remove_phone.sql' 'remove_phone'
+$removedColumnCount = Psql "SELECT count(*) FROM information_schema.columns WHERE table_schema='fb' AND table_name='id_user' AND column_name IN ('username','phone','dob','display_name','gender');"
+Assert-True ($removedColumnCount -eq '0') 'Authentication schema has no phone, username, or SocialGraph profile columns'
 
 $health = Invoke-GraphQl -Url $gateway -Query 'query { health }'
 Assert-True ($health.Json.data.health -eq 'ok') 'Gateway health proxies Authentication'

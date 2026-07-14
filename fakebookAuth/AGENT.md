@@ -122,16 +122,17 @@ Core tables:
 - `fb.id_role`, `fb.id_permission`, `fb.id_role_permission`, `fb.id_user_role`: role/permission placeholders.
 - `fb.id_mfa_method`: MFA placeholder.
 
-Authentication is email-only. SocialGraph exclusively owns username, name, birthdate, gender, location, and other profile data. Migration history is immutable and existing databases must reach this final order:
+Authentication is email-only and currently has no phone identifier. SocialGraph exclusively owns username, name, birthdate, gender, location, and other profile data. Migration history is immutable and existing databases must reach this final order:
 
 ```text
 migrations/20260713_add_gender.sql
 migrations/20260713_add_valid_date.sql
 migrations/20260714_remove_username.sql
 migrations/20260714_remove_profile_fields.sql
+migrations/20260714_remove_phone.sql
 ```
 
-`20260713_add_gender.sql` is retained as historical migration input and is superseded by `20260714_remove_profile_fields.sql`. For a rolling deployment, deploy this profile-free Auth version, drain every old Auth instance, and only then run the destructive removal migrations. Fresh databases use `schema.sql`, which already omits all profile columns.
+`20260713_add_gender.sql` is retained as historical migration input and is superseded by `20260714_remove_profile_fields.sql`. For a rolling deployment, deploy this email-only/profile-free Auth version, drain every old Auth instance, and only then run the destructive removal migrations. Fresh databases use `schema.sql`, which already omits phone and all profile columns.
 
 User status values:
 
@@ -581,7 +582,7 @@ Notes:
 
 ### login
 
-Authenticates email + password and creates a new session.
+Authenticates email + password and creates a new session. `identifier` must contain an email address; phone login is not currently supported.
 
 ```graphql
 mutation Login($input: LoginInput!) {
@@ -1112,7 +1113,7 @@ Automated `dotnet test fakebookAuth.sln` contract tests and the broader E2E runn
 - multi-device session behavior
 - Gateway proxy login/refresh/logout cookie behavior
 
-The reproducible local E2E runner is `scripts/auth-gateway-e2e.ps1`. Pass `-PaymentSecret` with the same value as Auth `Payment__InternalSharedSecret`. It validates Auth/SocialGraph/Gateway/Payment integration and does not print OTPs, access tokens, refresh tokens, or cookie values. The permanent test project validates the profile-free Auth schema/internal payload/JWT, UTC Payment dates, and database artifacts without external infrastructure.
+The reproducible local E2E runner is `scripts/auth-gateway-e2e.ps1`. Pass `-PaymentSecret` with the same value as Auth `Payment__InternalSharedSecret`. It validates Auth/SocialGraph/Gateway/Payment integration and does not print OTPs, access tokens, refresh tokens, or cookie values. The permanent test project validates the email-only/profile-free Auth schema, internal payload, JWT, UTC Payment dates, and database artifacts without external infrastructure.
 
 ## Backend-Payment Internal Contract
 

@@ -11,7 +11,7 @@ This design supersedes the earlier plan to persist gender in Authentication.
 Authentication owns:
 
 - canonical `user_id` reference
-- email and optional future authentication identifiers such as phone
+- email as the only currently supported login identifier; phone is not persisted or supported yet
 - password credentials
 - email verification and password-reset OTP state
 - account status, sessions, refresh tokens, JWT issuing, and audit events
@@ -75,7 +75,7 @@ Frontend views that need profile data query SocialGraph using the canonical user
 
 ## Database And Migrations
 
-The final `fb.id_user` schema does not contain `username`, `dob`, `display_name`, or `gender`.
+The final `fb.id_user` schema does not contain `phone`, `username`, `dob`, `display_name`, or `gender`.
 
 Published migrations remain immutable:
 
@@ -84,11 +84,12 @@ Published migrations remain immutable:
 20260713_add_valid_date.sql
 20260714_remove_username.sql
 20260714_remove_profile_fields.sql
+20260714_remove_phone.sql
 ```
 
-`20260713_add_gender.sql` is historical and is superseded by `20260714_remove_profile_fields.sql`. Fresh databases use `schema.sql`, where profile fields are already absent.
+`20260713_add_gender.sql` is historical and is superseded by `20260714_remove_profile_fields.sql`. Fresh databases use `schema.sql`, where phone and profile fields are already absent.
 
-For a rolling deployment, deploy the profile-free Auth and SocialGraph caller first, drain old Auth instances, then apply destructive column-removal migrations. For the current pre-production environment, the complete migration sequence can run before starting the new services.
+For a rolling deployment, deploy the email-only/profile-free Auth and SocialGraph caller first, drain old Auth instances, then apply destructive column-removal migrations. For the current pre-production environment, the complete migration sequence can run before starting the new services.
 
 ## Gateway Contract
 
@@ -103,7 +104,7 @@ For a rolling deployment, deploy the profile-free Auth and SocialGraph caller fi
 - `/internal/users` accepts only user ID, email, and password from SocialGraph.
 - SocialGraph still persists all profile input and uses name for Search indexing.
 - Auth SQL inserts/selects do not reference the removed columns.
-- Fresh schema omits all removed columns; the new migration is idempotent.
+- Fresh schema omits all removed columns; the removal migrations are idempotent.
 - JWT payload has no profile claims.
 - Login, refresh, `me`, OTP resend, password reset, session management, and Payment validity still work.
 - Gateway composition keeps SocialGraph profile fields while removing them from Auth `UserType`.

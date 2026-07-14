@@ -25,6 +25,7 @@
     <None Include="..\..\fakebookAuth\schema.sql" Link="schema.sql" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\fakebookAuth\migrations\20260714_remove_username.sql" Link="20260714_remove_username.sql" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\fakebookAuth\migrations\20260714_remove_profile_fields.sql" Link="20260714_remove_profile_fields.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\fakebookAuth\migrations\20260714_remove_phone.sql" Link="20260714_remove_phone.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

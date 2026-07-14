@@ -8,7 +8,6 @@ SET search_path TO fb;
 CREATE TABLE id_user (
                          user_id          bigint PRIMARY KEY,
                          email            text UNIQUE,
-                         phone            text UNIQUE,
                          valid_date       timestamptz,
                          status           smallint NOT NULL DEFAULT 4, -- 1=active, 2=disabled, 3=deleted, 4=unverified
                          created_at       timestamptz NOT NULL DEFAULT now(),
@@ -54,7 +53,7 @@ CREATE TABLE id_session_refresh_token (
 CREATE TABLE id_verification (
                                  verification_id  bigint PRIMARY KEY,
                                  user_id          bigint NOT NULL REFERENCES id_user(user_id) ON DELETE CASCADE,
-                                 type             smallint NOT NULL, -- 1=email_verify, 2=phone_otp, 3=password_reset
+                                 type             smallint NOT NULL, -- 1=email_verify, 3=password_reset
                                  token_hash       text NOT NULL,
                                  is_used          boolean NOT NULL DEFAULT false,
                                  expires_at       timestamptz NOT NULL,
@@ -144,6 +143,5 @@ CREATE INDEX id_audit_otp_user_action_type_time_idx
 -- Truy vấn verify token cực nhanh lúc user submit OTP
 CREATE INDEX id_verification_token_idx ON id_verification (token_hash);
 
--- (Tùy chọn) B-Tree index chuẩn cho các trường định danh dùng để login
+-- B-Tree index cho email đăng nhập
 CREATE INDEX id_user_email_idx ON id_user (email);
-CREATE INDEX id_user_phone_idx ON id_user (phone);

@@ -122,16 +122,17 @@ Các bảng chính:
 - `fb.id_role`, `fb.id_permission`, `fb.id_role_permission`, `fb.id_user_role`: khung role/permission.
 - `fb.id_mfa_method`: khung MFA.
 
-Authentication chỉ định danh bằng email. SocialGraph sở hữu riêng username, name, birthdate, gender, location và toàn bộ profile data khác. Migration history được giữ bất biến và database hiện có phải đạt thứ tự cuối cùng sau:
+Authentication chỉ định danh bằng email và hiện không có phone identifier. SocialGraph sở hữu riêng username, name, birthdate, gender, location và toàn bộ profile data khác. Migration history được giữ bất biến và database hiện có phải đạt thứ tự cuối cùng sau:
 
 ```text
 migrations/20260713_add_gender.sql
 migrations/20260713_add_valid_date.sql
 migrations/20260714_remove_username.sql
 migrations/20260714_remove_profile_fields.sql
+migrations/20260714_remove_phone.sql
 ```
 
-`20260713_add_gender.sql` được giữ lại như migration history và bị supersede bởi `20260714_remove_profile_fields.sql`. Nếu rolling deployment, deploy Auth profile-free này, drain toàn bộ Auth instance cũ, rồi mới chạy các migration destructive. Database mới dùng `schema.sql`, vốn đã không còn profile column.
+`20260713_add_gender.sql` được giữ lại như migration history và bị supersede bởi `20260714_remove_profile_fields.sql`. Nếu rolling deployment, deploy Auth email-only/profile-free này, drain toàn bộ Auth instance cũ, rồi mới chạy các migration destructive. Database mới dùng `schema.sql`, vốn đã không còn phone hay profile column.
 
 Giá trị `id_user.status`:
 
@@ -581,7 +582,7 @@ Lưu ý:
 
 ### login
 
-Đăng nhập bằng email + password và tạo session mới.
+Đăng nhập bằng email + password và tạo session mới. `identifier` phải chứa email; hiện chưa hỗ trợ đăng nhập bằng phone.
 
 ```graphql
 mutation Login($input: LoginInput!) {
@@ -1112,7 +1113,7 @@ Contract test tự động `dotnet test fakebookAuth.sln` và E2E runner rộng 
 - multi-device session behavior
 - Gateway proxy login/refresh/logout cookie behavior
 
-Local E2E runner nằm tại `scripts/auth-gateway-e2e.ps1`. Truyền `-PaymentSecret` cùng giá trị với Auth `Payment__InternalSharedSecret`. Script kiểm tra integration Auth/SocialGraph/Gateway/Payment và không print OTP, access token, refresh token hay cookie value. Test project cố định kiểm tra Auth schema/internal payload/JWT không có profile field, UTC Payment date và database artifact mà không cần hạ tầng ngoài.
+Local E2E runner nằm tại `scripts/auth-gateway-e2e.ps1`. Truyền `-PaymentSecret` cùng giá trị với Auth `Payment__InternalSharedSecret`. Script kiểm tra integration Auth/SocialGraph/Gateway/Payment và không print OTP, access token, refresh token hay cookie value. Test project cố định kiểm tra Auth schema/internal payload/JWT email-only và không có phone/profile field, UTC Payment date và database artifact mà không cần hạ tầng ngoài.
 
 ## Contract Nội bộ với Backend-Payment
 

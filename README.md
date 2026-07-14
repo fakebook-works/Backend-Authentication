@@ -180,7 +180,7 @@ changePassword(input: ChangePasswordInput!): AuthActionPayload!
 
 `register` is available for direct Authentication testing and backward compatibility, but the Gateway marks it `@internal`. It accepts only `email` and `password`. Normal frontend registration must call SocialGraph `createUser` so the canonical user ID and profile are created before Auth credentials.
 
-`UserType` contains only `userId`, `email`, `validDate`, and `status`. Name, username, birthdate, gender, location, avatar, and other profile data must be queried from SocialGraph.
+`UserType` contains only `userId`, `email`, `validDate`, and `status`. Authentication currently supports email login only and has no phone identifier. Name, username, birthdate, gender, location, avatar, and other profile data must be queried from SocialGraph.
 
 Protected operations require:
 
@@ -264,16 +264,17 @@ Configure `Payment__InternalSharedSecret` independently from the Gateway secret.
 
 ## Existing Database Migration
 
-The migration history remains immutable even though production has not been deployed. The final schema after applying the history contains `valid_date` but no username or SocialGraph profile columns:
+The migration history remains immutable even though production has not been deployed. The final schema after applying the history contains `valid_date` but no phone, username, or SocialGraph profile columns:
 
 ```text
 fakebookAuth/migrations/20260713_add_gender.sql
 fakebookAuth/migrations/20260713_add_valid_date.sql
 fakebookAuth/migrations/20260714_remove_username.sql
 fakebookAuth/migrations/20260714_remove_profile_fields.sql
+fakebookAuth/migrations/20260714_remove_phone.sql
 ```
 
-Fresh databases should use `schema.sql`, which already omits `username`, `dob`, `display_name`, and `gender`. Existing development databases should run the two removal migrations. If this is ever rolled out while an old Auth version is still running, deploy the profile-free Auth contract first, drain old instances, and only then drop the columns; the new code tolerates the old columns, while old code does not tolerate their removal.
+Fresh databases should use `schema.sql`, which already omits `phone`, `username`, `dob`, `display_name`, and `gender`. Existing development databases should run all three removal migrations. If this is ever rolled out while an old Auth version is still running, deploy the email-only/profile-free Auth contract first, drain old instances, and only then drop the columns; the new code tolerates the old columns, while old code does not tolerate their removal.
 
 ## Security Notes
 
@@ -293,4 +294,4 @@ For detailed developer and AI agent guidance, see:
 - `fakebookAuth/AGENT.md`
 - `fakebookAuth/AGENT_VIE.md`
 
-Automated contract tests run with `dotnet test fakebookAuth.sln`. The broader `scripts/auth-gateway-e2e.ps1` suite expects Auth, SocialGraph, Gateway, Payment dependencies, and a PostgreSQL Docker container; pass `-PaymentSecret` with the same value as Auth `Payment__InternalSharedSecret`. It covers canonical registration, profile-field isolation, OTP, email-only login, JWT/session, Payment validity, refresh cookies, password flows, logout, and spoofing without printing OTPs or tokens.
+Automated contract tests run with `dotnet test fakebookAuth.sln`. The broader `scripts/auth-gateway-e2e.ps1` suite expects Auth, SocialGraph, Gateway, Payment dependencies, and a PostgreSQL Docker container; pass `-PaymentSecret` with the same value as Auth `Payment__InternalSharedSecret`. It covers canonical registration, phone/profile-field isolation, OTP, email-only login, JWT/session, Payment validity, refresh cookies, password flows, logout, and spoofing without printing OTPs or tokens.
