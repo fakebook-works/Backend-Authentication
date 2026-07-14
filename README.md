@@ -99,7 +99,7 @@ Create the PostgreSQL schema from:
 fakebookAuth/schema.sql
 ```
 
-The schema uses PostgreSQL schema `fb` and includes:
+The schema uses PostgreSQL schema `auth` and includes:
 
 - `id_user`
 - `id_credential`
@@ -248,7 +248,7 @@ Other subgraphs should not read browser cookies. They receive trusted identity c
 
 ## Payment Premium Validity
 
-Authentication remains the sole owner of `fb.id_user.valid_date`. Backend-Payment calls these internal GraphQL operations directly with `X-Payment-Secret`:
+Authentication remains the sole owner of `auth.id_user.valid_date`. Backend-Payment calls these internal GraphQL operations directly with `X-Payment-Secret`:
 
 ```graphql
 query PaymentPremiumState($userId: ID!) {
@@ -264,7 +264,7 @@ Configure `Payment__InternalSharedSecret` independently from the Gateway secret.
 
 ## Existing Database Migration
 
-The migration history remains immutable even though production has not been deployed. The final schema after applying the history contains `valid_date` but no phone, username, or SocialGraph profile columns:
+The migration history remains immutable even though production has not been deployed. The final PostgreSQL schema is named `auth`; it contains `valid_date` but no phone, username, or SocialGraph profile columns:
 
 ```text
 fakebookAuth/migrations/20260713_add_gender.sql
@@ -272,9 +272,12 @@ fakebookAuth/migrations/20260713_add_valid_date.sql
 fakebookAuth/migrations/20260714_remove_username.sql
 fakebookAuth/migrations/20260714_remove_profile_fields.sql
 fakebookAuth/migrations/20260714_remove_phone.sql
+fakebookAuth/migrations/20260714_rename_schema_to_auth.sql
 ```
 
-Fresh databases should use `schema.sql`, which already omits `phone`, `username`, `dob`, `display_name`, and `gender`. Existing development databases should run all three removal migrations. If this is ever rolled out while an old Auth version is still running, deploy the email-only/profile-free Auth contract first, drain old instances, and only then drop the columns; the new code tolerates the old columns, while old code does not tolerate their removal.
+Fresh databases should use `schema.sql`, which creates schema `auth` directly and already omits `phone`, `username`, `dob`, `display_name`, and `gender`. Existing databases must run the historical migrations against `fb` first, then run `20260714_rename_schema_to_auth.sql` last. The rename migration is idempotent, fails safely if both schema names exist, and leaves no `fb` schema behind.
+
+For a rolling deployment, apply the removal migrations while the old Auth version is stopped or drained, run the schema rename, then deploy the Auth version whose runtime SQL targets `auth.*`. Do not start this version before the rename migration has completed.
 
 ## Security Notes
 

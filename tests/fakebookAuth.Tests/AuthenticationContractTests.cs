@@ -144,19 +144,28 @@ public sealed class AuthenticationContractTests
     }
 
     [Fact]
-    public void DatabaseArtifacts_RemoveUnusedIdentityAndProfileFields()
+    public void DatabaseArtifacts_UseAuthSchemaAndRemoveUnsupportedFields()
     {
         var schema = File.ReadAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "schema.sql"));
+        var repositorySource = File.ReadAllText(
+            System.IO.Path.Combine(AppContext.BaseDirectory, "Repositories.cs"));
         var usernameMigration = File.ReadAllText(
             System.IO.Path.Combine(AppContext.BaseDirectory, "20260714_remove_username.sql"));
         var profileMigration = File.ReadAllText(
             System.IO.Path.Combine(AppContext.BaseDirectory, "20260714_remove_profile_fields.sql"));
         var phoneMigration = File.ReadAllText(
             System.IO.Path.Combine(AppContext.BaseDirectory, "20260714_remove_phone.sql"));
+        var schemaRenameMigration = File.ReadAllText(
+            System.IO.Path.Combine(AppContext.BaseDirectory, "20260714_rename_schema_to_auth.sql"));
 
+        Assert.Contains("CREATE SCHEMA IF NOT EXISTS auth", schema, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SET search_path TO auth", schema, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CREATE SCHEMA IF NOT EXISTS fb", schema, StringComparison.OrdinalIgnoreCase);
         AssertUnsupportedIdentityFieldsAbsent(schema);
         Assert.DoesNotContain("display_name", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("id_user_phone_idx", schema, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("auth.id_user", repositorySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("fb.", repositorySource, StringComparison.Ordinal);
         Assert.Null(typeof(IdentityUser).GetProperty("Phone"));
         Assert.Contains("DROP COLUMN IF EXISTS username", usernameMigration, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("DROP INDEX IF EXISTS fb.id_user_phone_idx", phoneMigration, StringComparison.OrdinalIgnoreCase);
@@ -164,6 +173,9 @@ public sealed class AuthenticationContractTests
         Assert.Contains("DROP COLUMN IF EXISTS dob", profileMigration, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("DROP COLUMN IF EXISTS display_name", profileMigration, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("DROP COLUMN IF EXISTS gender", profileMigration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("to_regnamespace('auth')", schemaRenameMigration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("to_regnamespace('fb')", schemaRenameMigration, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ALTER SCHEMA fb RENAME TO auth", schemaRenameMigration, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<string> ExportSchemaAsync()

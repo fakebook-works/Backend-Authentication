@@ -58,7 +58,7 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         const string sql = """
             SELECT EXISTS (
                 SELECT 1
-                FROM fb.id_user
+                FROM auth.id_user
                 WHERE lower(email) = lower(@Email)
             );
             """;
@@ -79,7 +79,7 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO fb.id_user (user_id, email, status)
+            INSERT INTO auth.id_user (user_id, email, status)
             VALUES (@UserId, @Email, @Status);
             """;
 
@@ -146,7 +146,7 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_user
+            UPDATE auth.id_user
             SET status = @Status,
                 updated_at = now()
             WHERE user_id = @UserId;
@@ -167,7 +167,7 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_user
+            UPDATE auth.id_user
             SET valid_date = GREATEST(
                     COALESCE(valid_date, '-infinity'::timestamptz),
                     @ValidDate
@@ -196,7 +196,7 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
             status AS Status,
             created_at AS CreatedAt,
             updated_at AS UpdatedAt
-        FROM fb.id_user
+        FROM auth.id_user
         """;
 
     private const string SelectByEmailSql = $"""
@@ -264,7 +264,7 @@ public sealed class CredentialRepository(NpgsqlDataSource dataSource) : ICredent
         CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO fb.id_credential (credential_id, user_id, provider, secret_hash)
+            INSERT INTO auth.id_credential (credential_id, user_id, provider, secret_hash)
             VALUES (@CredentialId, @UserId, @Provider, @SecretHash);
             """;
 
@@ -290,7 +290,7 @@ public sealed class CredentialRepository(NpgsqlDataSource dataSource) : ICredent
                 secret_hash AS SecretHash,
                 created_at AS CreatedAt,
                 last_used_at AS LastUsedAt
-            FROM fb.id_credential
+            FROM auth.id_credential
             WHERE user_id = @UserId
               AND provider = @Provider
             ORDER BY created_at DESC
@@ -313,7 +313,7 @@ public sealed class CredentialRepository(NpgsqlDataSource dataSource) : ICredent
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_credential
+            UPDATE auth.id_credential
             SET last_used_at = now()
             WHERE credential_id = @CredentialId;
             """;
@@ -330,11 +330,11 @@ public sealed class CredentialRepository(NpgsqlDataSource dataSource) : ICredent
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_credential
+            UPDATE auth.id_credential
             SET secret_hash = @SecretHash
             WHERE credential_id = (
                 SELECT credential_id
-                FROM fb.id_credential
+                FROM auth.id_credential
                 WHERE user_id = @UserId
                   AND provider = @Provider
                 ORDER BY created_at DESC
@@ -444,7 +444,7 @@ public sealed class VerificationRepository : IVerificationRepository
         CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO fb.id_verification (verification_id, user_id, type, token_hash, expires_at)
+            INSERT INTO auth.id_verification (verification_id, user_id, type, token_hash, expires_at)
             VALUES (@VerificationId, @UserId, @Type, @TokenHash, @ExpiresAt);
             """;
 
@@ -490,7 +490,7 @@ public sealed class VerificationRepository : IVerificationRepository
     {
         const string sql = """
             SELECT verification_id
-            FROM fb.id_verification
+            FROM auth.id_verification
             WHERE user_id = @UserId
               AND type = @Type
               AND token_hash = @TokenHash
@@ -521,7 +521,7 @@ public sealed class VerificationRepository : IVerificationRepository
     {
         const string sql = """
             SELECT created_at
-            FROM fb.id_verification
+            FROM auth.id_verification
             WHERE user_id = @UserId
               AND type = @Type
             ORDER BY created_at DESC
@@ -548,7 +548,7 @@ public sealed class VerificationRepository : IVerificationRepository
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_verification
+            UPDATE auth.id_verification
             SET is_used = true
             WHERE user_id = @UserId
               AND type = @Type
@@ -571,7 +571,7 @@ public sealed class VerificationRepository : IVerificationRepository
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_verification
+            UPDATE auth.id_verification
             SET is_used = true
             WHERE verification_id = @VerificationId;
             """;
@@ -685,7 +685,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO fb.id_session (
+            INSERT INTO auth.id_session (
                 session_id,
                 user_id,
                 refresh_token,
@@ -704,7 +704,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
                 CAST(@IpAddress AS inet),
                 @ExpiresAt);
 
-            INSERT INTO fb.id_session_refresh_token (
+            INSERT INTO auth.id_session_refresh_token (
                 token_hash,
                 session_id,
                 expires_at)
@@ -772,8 +772,8 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
                 session.revocation_reason AS SessionRevocationReason,
                 token.replaced_at AS ReplacedAt,
                 token.reuse_detected_at AS ReuseDetectedAt
-            FROM fb.id_session_refresh_token token
-            INNER JOIN fb.id_session session ON session.session_id = token.session_id
+            FROM auth.id_session_refresh_token token
+            INNER JOIN auth.id_session session ON session.session_id = token.session_id
             WHERE token.token_hash = @RefreshTokenHash
               AND token.replaced_at IS NOT NULL
             LIMIT 1;
@@ -797,7 +797,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         const string sql = """
             SELECT EXISTS (
                 SELECT 1
-                FROM fb.id_session
+                FROM auth.id_session
                 WHERE user_id = @UserId
                   AND session_id = @SessionId
                   AND revoked_at IS NULL
@@ -847,7 +847,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO fb.id_session_refresh_token (
+            INSERT INTO auth.id_session_refresh_token (
                 token_hash,
                 session_id,
                 expires_at,
@@ -859,20 +859,20 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
                 expires_at,
                 created_at,
                 now()
-            FROM fb.id_session
+            FROM auth.id_session
             WHERE session_id = @SessionId
               AND revoked_at IS NULL
             ON CONFLICT (token_hash) DO UPDATE
-            SET replaced_at = COALESCE(fb.id_session_refresh_token.replaced_at, now());
+            SET replaced_at = COALESCE(auth.id_session_refresh_token.replaced_at, now());
 
-            UPDATE fb.id_session
+            UPDATE auth.id_session
             SET refresh_token = @RefreshTokenHash,
                 expires_at = @ExpiresAt,
                 last_seen_at = now()
             WHERE session_id = @SessionId
               AND revoked_at IS NULL;
 
-            INSERT INTO fb.id_session_refresh_token (
+            INSERT INTO auth.id_session_refresh_token (
                 token_hash,
                 session_id,
                 expires_at)
@@ -900,7 +900,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_session
+            UPDATE auth.id_session
             SET revoked_at = COALESCE(revoked_at, now()),
                 revocation_reason = COALESCE(revocation_reason, @Reason)
             WHERE session_id = @SessionId;
@@ -924,7 +924,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_session
+            UPDATE auth.id_session
             SET revoked_at = COALESCE(revoked_at, now()),
                 revocation_reason = COALESCE(revocation_reason, @Reason)
             WHERE user_id = @UserId
@@ -949,7 +949,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_session
+            UPDATE auth.id_session
             SET revoked_at = COALESCE(revoked_at, now()),
                 revocation_reason = COALESCE(revocation_reason, @Reason)
             WHERE user_id = @UserId
@@ -974,7 +974,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_session
+            UPDATE auth.id_session
             SET revoked_at = COALESCE(revoked_at, now()),
                 revocation_reason = COALESCE(revocation_reason, @Reason)
             WHERE user_id = @UserId
@@ -998,7 +998,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         CancellationToken cancellationToken)
     {
         const string sql = """
-            UPDATE fb.id_session_refresh_token
+            UPDATE auth.id_session_refresh_token
             SET reuse_detected_at = COALESCE(reuse_detected_at, now())
             WHERE token_hash = @RefreshTokenHash;
             """;
@@ -1069,7 +1069,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
             last_seen_at AS LastSeenAt,
             revocation_reason AS RevocationReason,
             revoked_at AS RevokedAt
-        FROM fb.id_session
+        FROM auth.id_session
         """;
 }
 
@@ -1112,7 +1112,7 @@ public sealed class AuditLogRepository(NpgsqlDataSource dataSource) : IAuditLogR
         CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO fb.id_audit_log (
+            INSERT INTO auth.id_audit_log (
                 audit_id,
                 user_id,
                 action,
@@ -1151,14 +1151,14 @@ public sealed class AuditLogRepository(NpgsqlDataSource dataSource) : IAuditLogR
         const string sql = """
             WITH last_success AS (
                 SELECT COALESCE(MAX(created_at), @Cutoff) AS since
-                FROM fb.id_audit_log
+                FROM auth.id_audit_log
                 WHERE action = 'LOGIN_SUCCESS'
                   AND data ->> 'identifier' = @Identifier
                   AND created_at >= @Cutoff
                   AND (@IpAddress IS NULL OR ip_address = CAST(@IpAddress AS inet))
             )
             SELECT COUNT(*)::int
-            FROM fb.id_audit_log logs, last_success
+            FROM auth.id_audit_log logs, last_success
             WHERE logs.action = 'LOGIN_FAILURE'
               AND logs.data ->> 'identifier' = @Identifier
               AND logs.created_at >= @Cutoff
@@ -1189,7 +1189,7 @@ public sealed class AuditLogRepository(NpgsqlDataSource dataSource) : IAuditLogR
     {
         const string sql = """
             SELECT COUNT(*)::int
-            FROM fb.id_audit_log
+            FROM auth.id_audit_log
             WHERE user_id = @UserId
               AND action = @Action
               AND created_at >= @Cutoff

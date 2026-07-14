@@ -23,9 +23,11 @@
 
   <ItemGroup>
     <None Include="..\..\fakebookAuth\schema.sql" Link="schema.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\fakebookAuth\Repositories\Repositories.cs" Link="Repositories.cs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\fakebookAuth\migrations\20260714_remove_username.sql" Link="20260714_remove_username.sql" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\fakebookAuth\migrations\20260714_remove_profile_fields.sql" Link="20260714_remove_profile_fields.sql" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\fakebookAuth\migrations\20260714_remove_phone.sql" Link="20260714_remove_phone.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\fakebookAuth\migrations\20260714_rename_schema_to_auth.sql" Link="20260714_rename_schema_to_auth.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

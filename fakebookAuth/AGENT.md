@@ -109,18 +109,18 @@ RefreshTokenCookieSecure = true
 
 ## Database Notes
 
-The schema is under PostgreSQL schema `fb`.
+The schema is under PostgreSQL schema `auth`.
 
 Core tables:
 
-- `fb.id_user`: authentication identity account.
-- `fb.id_credential`: password credential hash.
-- `fb.id_session`: active/revoked session state and current refresh token hash.
-- `fb.id_session_refresh_token`: refresh token history for reuse detection.
-- `fb.id_verification`: OTP verification records.
-- `fb.id_audit_log`: security audit events.
-- `fb.id_role`, `fb.id_permission`, `fb.id_role_permission`, `fb.id_user_role`: role/permission placeholders.
-- `fb.id_mfa_method`: MFA placeholder.
+- `auth.id_user`: authentication identity account.
+- `auth.id_credential`: password credential hash.
+- `auth.id_session`: active/revoked session state and current refresh token hash.
+- `auth.id_session_refresh_token`: refresh token history for reuse detection.
+- `auth.id_verification`: OTP verification records.
+- `auth.id_audit_log`: security audit events.
+- `auth.id_role`, `auth.id_permission`, `auth.id_role_permission`, `auth.id_user_role`: role/permission placeholders.
+- `auth.id_mfa_method`: MFA placeholder.
 
 Authentication is email-only and currently has no phone identifier. SocialGraph exclusively owns username, name, birthdate, gender, location, and other profile data. Migration history is immutable and existing databases must reach this final order:
 
@@ -130,9 +130,10 @@ migrations/20260713_add_valid_date.sql
 migrations/20260714_remove_username.sql
 migrations/20260714_remove_profile_fields.sql
 migrations/20260714_remove_phone.sql
+migrations/20260714_rename_schema_to_auth.sql
 ```
 
-`20260713_add_gender.sql` is retained as historical migration input and is superseded by `20260714_remove_profile_fields.sql`. For a rolling deployment, deploy this email-only/profile-free Auth version, drain every old Auth instance, and only then run the destructive removal migrations. Fresh databases use `schema.sql`, which already omits phone and all profile columns.
+The migrations before `20260714_rename_schema_to_auth.sql` intentionally keep targeting the historical `fb` schema. Existing databases run those migrations first and the idempotent rename last; runtime SQL in this version targets `auth.*`. Fresh databases use `schema.sql`, which creates `auth` directly and already omits phone and all profile columns. Never start this Auth version against an unrenamed `fb` database.
 
 User status values:
 
@@ -1117,7 +1118,7 @@ The reproducible local E2E runner is `scripts/auth-gateway-e2e.ps1`. Pass `-Paym
 
 ## Backend-Payment Internal Contract
 
-Authentication owns `fb.id_user.valid_date`; Payment owns all orders, provider transactions, and outbox data. Configure `Payment__InternalSharedSecret` independently from `Gateway__InternalSharedSecret`.
+Authentication owns `auth.id_user.valid_date`; Payment owns all orders, provider transactions, and outbox data. Configure `Payment__InternalSharedSecret` independently from `Gateway__InternalSharedSecret`.
 
 Backend-Payment calls Auth directly with `X-Payment-Secret`:
 

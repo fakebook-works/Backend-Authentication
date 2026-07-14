@@ -53,16 +53,16 @@ function Find-Otp([string]$hash) {
   throw 'OTP hash did not match a six-digit code.'
 }
 function Latest-Otp([string]$email, [int]$type) {
-  $hash = Psql "SELECT v.token_hash FROM fb.id_verification v JOIN fb.id_user u ON u.user_id=v.user_id WHERE u.email='$email' AND v.type=$type AND NOT v.is_used ORDER BY v.created_at DESC LIMIT 1;"
+  $hash = Psql "SELECT v.token_hash FROM auth.id_verification v JOIN auth.id_user u ON u.user_id=v.user_id WHERE u.email='$email' AND v.type=$type AND NOT v.is_used ORDER BY v.created_at DESC LIMIT 1;"
   Assert-True ($hash.Length -eq 64) "OTP hash exists for type $type"
   return Find-Otp $hash
 }
 
 function Run-MigrationTwice([string]$relativePath, [string]$name) {
   $sql = Get-Content -LiteralPath (Join-Path $repoRoot $relativePath) -Raw
-  $sql | docker exec -i $PostgresContainer psql -U fakebook -d $Database | Out-Null
+  $sql | docker exec -i $PostgresContainer psql -v ON_ERROR_STOP=1 -U fakebook -d $Database | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "$name migration first run failed." }
-  $sql | docker exec -i $PostgresContainer psql -U fakebook -d $Database | Out-Null
+  $sql | docker exec -i $PostgresContainer psql -v ON_ERROR_STOP=1 -U fakebook -d $Database | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "$name migration second run failed." }
   Assert-True $true "$name migration is idempotent"
 }
@@ -72,7 +72,10 @@ Run-MigrationTwice 'fakebookAuth\migrations\20260713_add_valid_date.sql' 'valid_
 Run-MigrationTwice 'fakebookAuth\migrations\20260714_remove_username.sql' 'remove_username'
 Run-MigrationTwice 'fakebookAuth\migrations\20260714_remove_profile_fields.sql' 'remove_profile_fields'
 Run-MigrationTwice 'fakebookAuth\migrations\20260714_remove_phone.sql' 'remove_phone'
-$removedColumnCount = Psql "SELECT count(*) FROM information_schema.columns WHERE table_schema='fb' AND table_name='id_user' AND column_name IN ('username','phone','dob','display_name','gender');"
+Run-MigrationTwice 'fakebookAuth\migrations\20260714_rename_schema_to_auth.sql' 'rename_schema_to_auth'
+Assert-True ((Psql "SELECT to_regnamespace('auth') IS NOT NULL;") -eq 't') 'Authentication schema is named auth'
+Assert-True ((Psql "SELECT to_regnamespace('fb') IS NULL;") -eq 't') 'Legacy fb schema no longer exists'
+$removedColumnCount = Psql "SELECT count(*) FROM information_schema.columns WHERE table_schema='auth' AND table_name='id_user' AND column_name IN ('username','phone','dob','display_name','gender');"
 Assert-True ($removedColumnCount -eq '0') 'Authentication schema has no phone, username, or SocialGraph profile columns'
 
 $health = Invoke-GraphQl -Url $gateway -Query 'query { health }'
@@ -113,7 +116,7 @@ $expiredEmail = "expired$suffix@example.com"
 $expiredRegister = Invoke-GraphQl -Url $auth -Query $registerMutation -Variables @{ input = @{ email=$expiredEmail; password=$password } }
 Assert-True ($expiredRegister.Json.data.register.success -eq $true) 'Direct Authentication register succeeds'
 $expiredOtp = Latest-Otp $expiredEmail 1
-Psql "UPDATE fb.id_verification SET expires_at=now()-interval '1 minute' WHERE verification_id=(SELECT v.verification_id FROM fb.id_verification v JOIN fb.id_user u ON u.user_id=v.user_id WHERE u.email='$expiredEmail' AND v.type=1 ORDER BY v.created_at DESC LIMIT 1);" | Out-Null
+Psql "UPDATE auth.id_verification SET expires_at=now()-interval '1 minute' WHERE verification_id=(SELECT v.verification_id FROM auth.id_verification v JOIN auth.id_user u ON u.user_id=v.user_id WHERE u.email='$expiredEmail' AND v.type=1 ORDER BY v.created_at DESC LIMIT 1);" | Out-Null
 $expiredVerification = Invoke-GraphQl -Url $auth -Query $verifyMutation -Variables @{ input=@{identifier=$expiredEmail;otp=$expiredOtp} }
 Assert-True ((Error-Code $expiredVerification) -eq 'INVALID_OR_EXPIRED_VERIFICATION_CODE') 'Expired verification OTP rejected'
 $wrongOtp = $null; $expiredOtp = $null
@@ -233,7 +236,7 @@ $wrongInternalSecret = Invoke-WebRequest "$authOrigin/internal/users" -Method Po
 Assert-True ($wrongInternalSecret.StatusCode -eq 400) '/internal/users rejects wrong secret'
 $createdInternal = Invoke-WebRequest "$authOrigin/internal/users" -Method Post -ContentType 'application/json' -Headers @{'X-Gateway-Secret'=$GatewaySecret} -Body $internalBody -SkipHttpErrorCheck
 Assert-True ($createdInternal.StatusCode -eq 200) '/internal/users accepts correct secret'
-Assert-True ((Psql "SELECT count(*) FROM fb.id_user WHERE email='$internalEmail';") -eq '1') '/internal/users persists the Auth identity'
+Assert-True ((Psql "SELECT count(*) FROM auth.id_user WHERE email='$internalEmail';") -eq '1') '/internal/users persists the Auth identity'
 
 $paymentQuery = 'query($userId:ID!){paymentPremiumState(userId:$userId){userId validDate}}'
 $paymentMutation = 'mutation($input:SetPaymentValidDateInput!){setPaymentValidDate(input:$input){userId validDate}}'
@@ -242,11 +245,11 @@ Assert-True ((Error-Code $paymentWrong) -eq 'FORBIDDEN') 'Payment Premium query 
 $laterValidDate = [DateTimeOffset]::UtcNow.AddDays(30).ToString('o')
 $paymentSet = Invoke-GraphQl -Url $auth -Query $paymentMutation -Variables @{input=@{userId="$internalUserId";validDate=$laterValidDate}} -ExtraHeaders @{'X-Payment-Secret'=$PaymentSecret}
 Assert-True ([DateTimeOffset]::Parse($paymentSet.Json.data.setPaymentValidDate.validDate) -eq [DateTimeOffset]::Parse($laterValidDate)) 'Payment sets Premium validDate'
-$updatedAfterExtension = Psql "SELECT updated_at::text FROM fb.id_user WHERE user_id=$internalUserId;"
+$updatedAfterExtension = Psql "SELECT updated_at::text FROM auth.id_user WHERE user_id=$internalUserId;"
 $earlierValidDate = [DateTimeOffset]::UtcNow.AddDays(10).ToString('o')
 $paymentRetry = Invoke-GraphQl -Url $auth -Query $paymentMutation -Variables @{input=@{userId="$internalUserId";validDate=$earlierValidDate}} -ExtraHeaders @{'X-Payment-Secret'=$PaymentSecret}
 Assert-True ([DateTimeOffset]::Parse($paymentRetry.Json.data.setPaymentValidDate.validDate) -eq [DateTimeOffset]::Parse($laterValidDate)) 'Payment retry cannot shorten Premium validity'
-$updatedAfterNoOpRetry = Psql "SELECT updated_at::text FROM fb.id_user WHERE user_id=$internalUserId;"
+$updatedAfterNoOpRetry = Psql "SELECT updated_at::text FROM auth.id_user WHERE user_id=$internalUserId;"
 Assert-True ($updatedAfterNoOpRetry -eq $updatedAfterExtension) 'Payment no-op retry does not mutate updated_at'
 $paymentRead = Invoke-GraphQl -Url $auth -Query $paymentQuery -Variables @{userId="$internalUserId"} -ExtraHeaders @{'X-Payment-Secret'=$PaymentSecret}
 Assert-True ([DateTimeOffset]::Parse($paymentRead.Json.data.paymentPremiumState.validDate) -eq [DateTimeOffset]::Parse($laterValidDate)) 'Payment reads persisted Premium validity'

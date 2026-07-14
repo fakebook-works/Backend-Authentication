@@ -109,18 +109,18 @@ Nếu dùng `Auth__RefreshTokenCookieSameSite=None` thì bắt buộc `Auth__Ref
 
 ## Ghi Chú Database
 
-Schema PostgreSQL là `fb`.
+Schema PostgreSQL là `auth`.
 
 Các bảng chính:
 
-- `fb.id_user`: tài khoản định danh phục vụ authentication.
-- `fb.id_credential`: credential đăng nhập, hiện dùng password hash.
-- `fb.id_session`: trạng thái session, refresh token hash hiện tại, revoke state.
-- `fb.id_session_refresh_token`: lịch sử refresh token để phát hiện reuse.
-- `fb.id_verification`: OTP verification.
-- `fb.id_audit_log`: audit log bảo mật.
-- `fb.id_role`, `fb.id_permission`, `fb.id_role_permission`, `fb.id_user_role`: khung role/permission.
-- `fb.id_mfa_method`: khung MFA.
+- `auth.id_user`: tài khoản định danh phục vụ authentication.
+- `auth.id_credential`: credential đăng nhập, hiện dùng password hash.
+- `auth.id_session`: trạng thái session, refresh token hash hiện tại, revoke state.
+- `auth.id_session_refresh_token`: lịch sử refresh token để phát hiện reuse.
+- `auth.id_verification`: OTP verification.
+- `auth.id_audit_log`: audit log bảo mật.
+- `auth.id_role`, `auth.id_permission`, `auth.id_role_permission`, `auth.id_user_role`: khung role/permission.
+- `auth.id_mfa_method`: khung MFA.
 
 Authentication chỉ định danh bằng email và hiện không có phone identifier. SocialGraph sở hữu riêng username, name, birthdate, gender, location và toàn bộ profile data khác. Migration history được giữ bất biến và database hiện có phải đạt thứ tự cuối cùng sau:
 
@@ -130,9 +130,10 @@ migrations/20260713_add_valid_date.sql
 migrations/20260714_remove_username.sql
 migrations/20260714_remove_profile_fields.sql
 migrations/20260714_remove_phone.sql
+migrations/20260714_rename_schema_to_auth.sql
 ```
 
-`20260713_add_gender.sql` được giữ lại như migration history và bị supersede bởi `20260714_remove_profile_fields.sql`. Nếu rolling deployment, deploy Auth email-only/profile-free này, drain toàn bộ Auth instance cũ, rồi mới chạy các migration destructive. Database mới dùng `schema.sql`, vốn đã không còn phone hay profile column.
+Các migration trước `20260714_rename_schema_to_auth.sql` cố ý tiếp tục target schema lịch sử `fb`. Database hiện có chạy các migration đó trước rồi chạy migration rename idempotent cuối cùng; runtime SQL của version này target `auth.*`. Database mới dùng `schema.sql`, tạo thẳng `auth` và không còn phone/profile column. Không start Auth version này trên database vẫn còn schema `fb`.
 
 Giá trị `id_user.status`:
 
@@ -1117,7 +1118,7 @@ Local E2E runner nằm tại `scripts/auth-gateway-e2e.ps1`. Truyền `-PaymentS
 
 ## Contract Nội bộ với Backend-Payment
 
-Authentication sở hữu `fb.id_user.valid_date`; Payment sở hữu toàn bộ order, provider transaction và outbox data. Cấu hình `Payment__InternalSharedSecret` độc lập với `Gateway__InternalSharedSecret`.
+Authentication sở hữu `auth.id_user.valid_date`; Payment sở hữu toàn bộ order, provider transaction và outbox data. Cấu hình `Payment__InternalSharedSecret` độc lập với `Gateway__InternalSharedSecret`.
 
 Backend-Payment gọi trực tiếp Auth bằng `X-Payment-Secret`:
 
