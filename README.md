@@ -133,6 +133,15 @@ GraphQL endpoint:
 http://localhost:<port>/graphql
 ```
 
+## Health
+
+Health endpoints used by local orchestration and containers:
+
+```text
+GET /health/live   Process liveness; does not require PostgreSQL.
+GET /health/ready  Opens PostgreSQL and executes SELECT 1; returns 503 until ready.
+```
+
 ## Docker
 
 Build:
@@ -208,6 +217,16 @@ Body:
 ```
 
 This endpoint creates an unverified user, password credential, and email verification OTP using the supplied `userId`. It is internal-only and rejects calls without the shared secret.
+
+SocialGraph deletion uses the idempotent companion endpoint:
+
+```http
+DELETE /internal/users/{userId}
+X-Gateway-Secret: <Gateway__InternalSharedSecret>
+```
+
+The identity is tombstoned instead of physically removed, all active sessions are
+revoked, and the email remains reserved so a deleted canonical ID cannot be reused.
 
 ## Gateway Integration
 

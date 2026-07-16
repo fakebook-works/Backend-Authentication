@@ -70,6 +70,75 @@ public sealed class AuthenticationContractTests
     }
 
     [Fact]
+    public async Task InternalProvisioning_AcceptsDedicatedAuthenticationServiceSecret()
+    {
+        const string dedicatedSecret = "dedicated-authentication-secret-at-least-32-bytes";
+        var service = CreateValidationOnlyAuthService(
+            headerName: "X-Internal-AuthenticationService-Secret",
+            providedSecret: dedicatedSecret,
+            gatewaySecret: SharedSecret,
+            authenticationServiceSecret: dedicatedSecret);
+
+        var exception = await Assert.ThrowsAsync<GraphQLException>(() =>
+            service.CreateUserIdentityAsync(
+                new CreateUserIdentityInput(123, "not-an-email", "Password123!"),
+                CancellationToken.None));
+
+        Assert.Equal("INVALID_EMAIL", exception.Errors[0].Code);
+    }
+
+    [Fact]
+    public async Task InternalProvisioning_DoesNotAcceptGatewaySecretWhenDedicatedSecretIsConfigured()
+    {
+        var service = CreateValidationOnlyAuthService(
+            headerName: "X-Gateway-Secret",
+            providedSecret: SharedSecret,
+            gatewaySecret: SharedSecret,
+            authenticationServiceSecret: "dedicated-authentication-secret-at-least-32-bytes");
+
+        var exception = await Assert.ThrowsAsync<GraphQLException>(() =>
+            service.CreateUserIdentityAsync(
+                new CreateUserIdentityInput(123, "a@example.com", "Password123!"),
+                CancellationToken.None));
+
+        Assert.Equal("FORBIDDEN", exception.Errors[0].Code);
+    }
+
+    [Fact]
+    public async Task DeleteIdentity_RejectsInvalidIdBeforeDatabaseAccess()
+    {
+        const string dedicatedSecret = "dedicated-authentication-secret-at-least-32-bytes";
+        var service = CreateValidationOnlyAuthService(
+            headerName: "X-Internal-AuthenticationService-Secret",
+            providedSecret: dedicatedSecret,
+            gatewaySecret: SharedSecret,
+            authenticationServiceSecret: dedicatedSecret);
+
+        var exception = await Assert.ThrowsAsync<GraphQLException>(() =>
+            service.DeleteUserIdentityAsync(0, CancellationToken.None));
+
+        Assert.Equal("INVALID_USER_ID", exception.Errors[0].Code);
+    }
+
+    [Fact]
+    public async Task GatewaySessionValidation_DoesNotTrustProvisioningSecretHeader()
+    {
+        const string dedicatedSecret = "dedicated-authentication-secret-at-least-32-bytes";
+        var service = CreateValidationOnlyAuthService(
+            headerName: "X-Internal-AuthenticationService-Secret",
+            providedSecret: dedicatedSecret,
+            gatewaySecret: SharedSecret,
+            authenticationServiceSecret: dedicatedSecret);
+
+        var exception = await Assert.ThrowsAsync<GraphQLException>(() =>
+            service.ValidateGatewaySessionAsync(
+                new GatewaySessionValidationInput(0, 0),
+                CancellationToken.None));
+
+        Assert.Equal("FORBIDDEN", exception.Errors[0].Code);
+    }
+
+    [Fact]
     public void InternalProvisioningContract_ContainsOnlyIdentityFields()
     {
         const string json = """
@@ -214,10 +283,14 @@ public sealed class AuthenticationContractTests
         }
     }
 
-    private static AuthService CreateValidationOnlyAuthService()
+    private static AuthService CreateValidationOnlyAuthService(
+        string headerName = "X-Gateway-Secret",
+        string providedSecret = SharedSecret,
+        string gatewaySecret = SharedSecret,
+        string authenticationServiceSecret = "")
     {
         var context = new DefaultHttpContext();
-        context.Request.Headers["X-Gateway-Secret"] = SharedSecret;
+        context.Request.Headers[headerName] = providedSecret;
         return new AuthService(
             dataSource: null!,
             users: null!,
@@ -232,7 +305,11 @@ public sealed class AuthenticationContractTests
             new HttpContextAccessor { HttpContext = context },
             NullLogger<AuthService>.Instance,
             Options.Create(new AuthOptions()),
-            Options.Create(new GatewayOptions { InternalSharedSecret = SharedSecret }),
+            Options.Create(new GatewayOptions
+            {
+                InternalSharedSecret = gatewaySecret,
+                AuthenticationServiceSharedSecret = authenticationServiceSecret
+            }),
             Options.Create(new SmtpOptions()));
     }
 
@@ -282,6 +359,12 @@ public sealed class AuthenticationContractTests
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task ActivateAsync(
+            DbConnection connection,
+            DbTransaction transaction,
+            long userId,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task MarkDeletedAsync(
             DbConnection connection,
             DbTransaction transaction,
             long userId,

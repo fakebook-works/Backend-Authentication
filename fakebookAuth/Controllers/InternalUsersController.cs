@@ -23,4 +23,20 @@ public sealed class InternalUsersController(IAuthService authService) : Controll
             return BadRequest(new AuthActionPayload(false, message));
         }
     }
+
+    [HttpDelete("{userId:long}")]
+    public async Task<ActionResult<AuthActionPayload>> DeleteUserIdentityAsync(
+        long userId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await authService.DeleteUserIdentityAsync(userId, cancellationToken));
+        }
+        catch (GraphQLException exception)
+        {
+            var message = exception.Errors.FirstOrDefault()?.Message ?? "User identity deletion failed.";
+            return BadRequest(new AuthActionPayload(false, message));
+        }
+    }
 }

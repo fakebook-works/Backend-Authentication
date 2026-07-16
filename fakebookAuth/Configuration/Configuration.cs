@@ -44,7 +44,17 @@ public sealed class GatewayOptions
 
     public string InternalSharedSecret { get; init; } = string.Empty;
 
+    public string AuthenticationServiceSharedSecret { get; init; } = string.Empty;
+
     public int InternalSharedSecretBytes => Encoding.UTF8.GetByteCount(InternalSharedSecret);
+
+    public int AuthenticationServiceSharedSecretBytes =>
+        Encoding.UTF8.GetByteCount(AuthenticationServiceSharedSecret);
+
+    public string ResolvedAuthenticationServiceSharedSecret =>
+        string.IsNullOrWhiteSpace(AuthenticationServiceSharedSecret)
+            ? InternalSharedSecret
+            : AuthenticationServiceSharedSecret;
 }
 
 public sealed class PaymentOptions

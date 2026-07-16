@@ -41,6 +41,12 @@ public interface IUserRepository
         long userId,
         CancellationToken cancellationToken);
 
+    Task MarkDeletedAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        long userId,
+        CancellationToken cancellationToken);
+
     Task<DateTimeOffset?> SetValidDateAsync(
         long userId,
         DateTimeOffset validDate,
@@ -155,6 +161,29 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
         var command = new CommandDefinition(
             sql,
             new { UserId = userId, Status = AuthConstants.StatusActive },
+            transaction,
+            cancellationToken: cancellationToken);
+
+        await connection.ExecuteAsync(command);
+    }
+
+    public async Task MarkDeletedAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        long userId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE auth.id_user
+            SET status = @Status,
+                updated_at = now()
+            WHERE user_id = @UserId
+              AND status <> @Status;
+            """;
+
+        var command = new CommandDefinition(
+            sql,
+            new { UserId = userId, Status = AuthConstants.StatusDeleted },
             transaction,
             cancellationToken: cancellationToken);
 

@@ -9,6 +9,7 @@ public interface IAuthService
 {
     Task<RegisterPayload> RegisterAsync(RegisterInput input, CancellationToken cancellationToken);
     Task<AuthActionPayload> CreateUserIdentityAsync(CreateUserIdentityInput input, CancellationToken cancellationToken);
+    Task<AuthActionPayload> DeleteUserIdentityAsync(long userId, CancellationToken cancellationToken);
     Task<VerifyEmailPayload> VerifyEmailAsync(VerifyEmailInput input, CancellationToken cancellationToken);
     Task<LoginPayload> LoginAsync(LoginInput input, CancellationToken cancellationToken);
     Task<LoginPayload> RefreshTokenAsync(RefreshTokenInput? input, CancellationToken cancellationToken);
@@ -45,6 +46,7 @@ public sealed class AuthService(
     Microsoft.Extensions.Options.IOptions<SmtpOptions> smtpOptions) : IAuthService
 {
     private const string GatewaySecretHeaderName = "X-Gateway-Secret";
+    private const string AuthenticationServiceSecretHeaderName = "X-Internal-AuthenticationService-Secret";
     private const string GatewayRefreshTokenHeaderName = "X-Refresh-Token";
     private const string GatewayCookieInstructionHeaderName = "X-Fakebook-Refresh-Cookie-Instruction";
 
@@ -65,7 +67,7 @@ public sealed class AuthService(
         CreateUserIdentityInput input,
         CancellationToken cancellationToken)
     {
-        EnsureGatewaySecret();
+        EnsureInternalProvisioningSecret();
 
         if (input.UserId <= 0)
         {
@@ -75,6 +77,57 @@ public sealed class AuthService(
         var register = NormalizeAndValidate(input);
         var message = await CreateUnverifiedUserAsync(input.UserId, register, cancellationToken);
         return new AuthActionPayload(true, message);
+    }
+
+    public async Task<AuthActionPayload> DeleteUserIdentityAsync(
+        long userId,
+        CancellationToken cancellationToken)
+    {
+        EnsureInternalProvisioningSecret();
+        if (userId <= 0)
+        {
+            throw GraphQlError("User id is invalid.", "INVALID_USER_ID");
+        }
+
+        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            var user = await users.FindByIdAsync(connection, transaction, userId, cancellationToken);
+            if (user is null || user.Status == AuthConstants.StatusDeleted)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return new AuthActionPayload(true, "User identity is already deleted.");
+            }
+
+            await users.MarkDeletedAsync(connection, transaction, userId, cancellationToken);
+            await sessions.RevokeAllByUserIdAsync(
+                connection,
+                transaction,
+                userId,
+                "ACCOUNT_DELETED",
+                cancellationToken);
+            await auditLogs.InsertAsync(
+                connection,
+                transaction,
+                ids.NewId(),
+                userId,
+                "ACCOUNT_DELETED",
+                metadata,
+                new { source = "SOCIAL_GRAPH" },
+                cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+            logger.LogInformation("User identity {UserId} was deleted by SocialGraph.", userId);
+            return new AuthActionPayload(true, "User identity deleted.");
+        }
+        catch
+        {
+            await RollbackQuietlyAsync(transaction, cancellationToken);
+            throw;
+        }
     }
 
     private async Task<string> CreateUnverifiedUserAsync(
@@ -1167,6 +1220,24 @@ public sealed class AuthService(
             !InternalSecretComparer.FixedTimeEquals(expected, provided))
         {
             throw GraphQlError("Gateway authentication failed.", "FORBIDDEN");
+        }
+    }
+
+    private void EnsureInternalProvisioningSecret()
+    {
+        var expected = _gatewayOptions.ResolvedAuthenticationServiceSharedSecret;
+        var headers = httpContextAccessor.HttpContext?.Request.Headers;
+        var provided = headers?[AuthenticationServiceSecretHeaderName].ToString();
+        if (string.IsNullOrWhiteSpace(provided))
+        {
+            provided = headers?[GatewaySecretHeaderName].ToString();
+        }
+
+        if (string.IsNullOrWhiteSpace(expected) ||
+            string.IsNullOrWhiteSpace(provided) ||
+            !InternalSecretComparer.FixedTimeEquals(expected, provided))
+        {
+            throw GraphQlError("Authentication service authentication failed.", "FORBIDDEN");
         }
     }
 

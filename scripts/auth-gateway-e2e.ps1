@@ -1,6 +1,6 @@
 param(
-  [string]$GatewayUrl = 'http://localhost:5000/graphql',
-  [string]$AuthenticationUrl = 'http://localhost:5001/graphql',
+    [string]$GatewayUrl = 'http://localhost:2001/graphql',
+    [string]$AuthenticationUrl = 'http://localhost:1001/graphql',
   [string]$PostgresContainer = 'fakebook-auth-e2e-db',
   [string]$Database = 'fakebook',
   [string]$GatewaySecret = 'local-gateway-secret-at-least-32-bytes-2026',

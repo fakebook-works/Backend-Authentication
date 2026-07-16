@@ -57,6 +57,10 @@ public static class Program
             .Validate(
                 options => options.InternalSharedSecretBytes == 0 || options.InternalSharedSecretBytes >= 32,
                 "Gateway:InternalSharedSecret must be at least 32 bytes when configured.")
+            .Validate(
+                options => options.AuthenticationServiceSharedSecretBytes == 0 ||
+                           options.AuthenticationServiceSharedSecretBytes >= 32,
+                "Gateway:AuthenticationServiceSharedSecret must be at least 32 bytes when configured.")
             .ValidateOnStart();
 
         builder.Services
@@ -80,6 +84,7 @@ public static class Program
             .ValidateOnStart();
 
         builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
+        builder.Services.AddSingleton<IAuthDatabaseReadinessProbe, PostgresAuthDatabaseReadinessProbe>();
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddControllers();
 
@@ -126,6 +131,8 @@ public static class Program
 
         app.MapGraphQL();
         app.MapControllers();
+        app.MapGet("/health/live", AuthHealthEndpoints.Live);
+        app.MapGet("/health/ready", AuthHealthEndpoints.ReadyAsync);
         app.MapGet("/", () => Results.Redirect("/graphql"));
 
         app.RunWithGraphQLCommands(args);
