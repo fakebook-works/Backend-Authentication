@@ -1,8 +1,6 @@
 -- Identity & Access domain (PostgreSQL) cho Fakebook
 -- Đã kết hợp tối ưu: BigInt PKs (Snowflake ID), JSONB mặc định, và quản lý Session/Verification thiết bị chi tiết.
 
-CREATE SCHEMA IF NOT EXISTS auth;
-SET search_path TO auth;
 
 -- 1. Bảng id_user (tài khoản định danh)
 CREATE TABLE id_user (
