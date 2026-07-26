@@ -105,6 +105,23 @@ public sealed class AuthenticationContractTests
     }
 
     [Fact]
+    public async Task InternalProvisioning_DoesNotFallBackToGatewaySecretWhenDedicatedSecretIsMissing()
+    {
+        var service = CreateValidationOnlyAuthService(
+            headerName: "X-Gateway-Secret",
+            providedSecret: SharedSecret,
+            gatewaySecret: SharedSecret,
+            authenticationServiceSecret: "");
+
+        var exception = await Assert.ThrowsAsync<GraphQLException>(() =>
+            service.CreateUserIdentityAsync(
+                new CreateUserIdentityInput(123, "a@example.com", "Password123!"),
+                CancellationToken.None));
+
+        Assert.Equal("FORBIDDEN", exception.Errors[0].Code);
+    }
+
+    [Fact]
     public async Task DeleteIdentity_RejectsInvalidIdBeforeDatabaseAccess()
     {
         const string dedicatedSecret = "dedicated-authentication-secret-at-least-32-bytes";
@@ -284,10 +301,10 @@ public sealed class AuthenticationContractTests
     }
 
     private static AuthService CreateValidationOnlyAuthService(
-        string headerName = "X-Gateway-Secret",
+        string headerName = "X-Internal-AuthenticationService-Secret",
         string providedSecret = SharedSecret,
         string gatewaySecret = SharedSecret,
-        string authenticationServiceSecret = "")
+        string authenticationServiceSecret = SharedSecret)
     {
         var context = new DefaultHttpContext();
         context.Request.Headers[headerName] = providedSecret;

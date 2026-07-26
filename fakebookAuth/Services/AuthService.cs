@@ -135,6 +135,9 @@ public sealed class AuthService(
         NormalizedRegisterInput register,
         CancellationToken cancellationToken)
     {
+        // Do the bounded CPU work before opening a transaction so a full BCrypt
+        // queue cannot also exhaust the database pool with idle transactions.
+        var passwordHash = await HashPasswordAsync(register.Password, cancellationToken);
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         string otp;
@@ -166,7 +169,7 @@ public sealed class AuthService(
                 transaction,
                 ids.NewId(),
                 userId,
-                passwordHasher.Hash(register.Password),
+                passwordHash,
                 cancellationToken);
 
             otp = OtpGenerator.SixDigitCode();
@@ -343,7 +346,8 @@ public sealed class AuthService(
         }
 
         var credential = await credentials.FindPasswordCredentialAsync(user.UserId, cancellationToken);
-        if (credential?.SecretHash is null || !passwordHasher.Verify(input.Password, credential.SecretHash))
+        if (credential?.SecretHash is null ||
+            !await VerifyPasswordAsync(input.Password, credential.SecretHash, cancellationToken))
         {
             await RecordLoginFailureAsync(identifier, user.UserId, "INVALID_PASSWORD", metadata, cancellationToken);
             throw InvalidCredentials();
@@ -973,7 +977,7 @@ public sealed class AuthService(
                 throw GraphQlError("Password reset code is invalid or expired.", "INVALID_OR_EXPIRED_PASSWORD_RESET_CODE");
             }
 
-            var secretHash = passwordHasher.Hash(input.NewPassword);
+            var secretHash = await HashPasswordAsync(input.NewPassword, cancellationToken);
             var updated = await credentials.UpdatePasswordCredentialAsync(
                 connection,
                 transaction,
@@ -1049,15 +1053,18 @@ public sealed class AuthService(
 
         var (user, principal) = await GetCurrentUserAsync(cancellationToken);
         var credential = await credentials.FindPasswordCredentialAsync(user.UserId, cancellationToken);
-        if (credential?.SecretHash is null || !passwordHasher.Verify(input.CurrentPassword, credential.SecretHash))
+        if (credential?.SecretHash is null ||
+            !await VerifyPasswordAsync(input.CurrentPassword, credential.SecretHash, cancellationToken))
         {
             throw InvalidCredentials();
         }
 
-        if (passwordHasher.Verify(input.NewPassword, credential.SecretHash))
+        if (await VerifyPasswordAsync(input.NewPassword, credential.SecretHash, cancellationToken))
         {
             throw GraphQlError("New password must be different from the current password.", "PASSWORD_UNCHANGED");
         }
+
+        var newPasswordHash = await HashPasswordAsync(input.NewPassword, cancellationToken);
 
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
@@ -1069,7 +1076,7 @@ public sealed class AuthService(
                 connection,
                 transaction,
                 user.UserId,
-                passwordHasher.Hash(input.NewPassword),
+                newPasswordHash,
                 cancellationToken);
 
             await sessions.RevokeAllByUserIdExceptAsync(
@@ -1226,12 +1233,9 @@ public sealed class AuthService(
     private void EnsureInternalProvisioningSecret()
     {
         var expected = _gatewayOptions.ResolvedAuthenticationServiceSharedSecret;
-        var headers = httpContextAccessor.HttpContext?.Request.Headers;
-        var provided = headers?[AuthenticationServiceSecretHeaderName].ToString();
-        if (string.IsNullOrWhiteSpace(provided))
-        {
-            provided = headers?[GatewaySecretHeaderName].ToString();
-        }
+        var provided = httpContextAccessor.HttpContext?
+            .Request.Headers[AuthenticationServiceSecretHeaderName]
+            .ToString();
 
         if (string.IsNullOrWhiteSpace(expected) ||
             string.IsNullOrWhiteSpace(provided) ||
@@ -1469,6 +1473,33 @@ public sealed class AuthService(
     }
 
     private static GraphQLException InvalidCredentials() => GraphQlError("Invalid credentials.", "INVALID_CREDENTIALS");
+
+    private async Task<string> HashPasswordAsync(string password, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await passwordHasher.HashAsync(password, cancellationToken);
+        }
+        catch (PasswordHashingCapacityException)
+        {
+            throw GraphQlError("Authentication service is busy. Please try again shortly.", "AUTH_CAPACITY_EXCEEDED");
+        }
+    }
+
+    private async Task<bool> VerifyPasswordAsync(
+        string password,
+        string passwordHash,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await passwordHasher.VerifyAsync(password, passwordHash, cancellationToken);
+        }
+        catch (PasswordHashingCapacityException)
+        {
+            throw GraphQlError("Authentication service is busy. Please try again shortly.", "AUTH_CAPACITY_EXCEEDED");
+        }
+    }
 
     private static GraphQLException Unauthenticated() => GraphQlError("Authentication is required.", "UNAUTHENTICATED");
 

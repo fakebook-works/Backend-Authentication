@@ -28,6 +28,10 @@ public sealed class AuthOptions
     public int OtpResendWindowMinutes { get; init; } = 15;
     public int LoginFailureLimit { get; init; } = 5;
     public int LoginFailureWindowMinutes { get; init; } = 15;
+    public int PasswordHashWorkFactor { get; init; } = 11;
+    public int PasswordHashMaxConcurrency { get; init; } = 2;
+    public int PasswordHashQueueLimit { get; init; } = 16;
+    public int PasswordHashQueueTimeoutSeconds { get; init; } = 5;
     public string RefreshTokenCookieName { get; init; } = "fb_refresh";
     public string RefreshTokenCookiePath { get; init; } = "/";
     public string RefreshTokenCookieSameSite { get; init; } = "Lax";
@@ -52,9 +56,7 @@ public sealed class GatewayOptions
         Encoding.UTF8.GetByteCount(AuthenticationServiceSharedSecret);
 
     public string ResolvedAuthenticationServiceSharedSecret =>
-        string.IsNullOrWhiteSpace(AuthenticationServiceSharedSecret)
-            ? InternalSharedSecret
-            : AuthenticationServiceSharedSecret;
+        AuthenticationServiceSharedSecret;
 }
 
 public sealed class PaymentOptions

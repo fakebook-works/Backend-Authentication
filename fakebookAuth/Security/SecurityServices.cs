@@ -4,30 +4,100 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Options;
+using System.Threading.RateLimiting;
 
 namespace fakebookAuth;
 
 public interface IPasswordHasher
 {
-    string Hash(string password);
-    bool Verify(string password, string passwordHash);
+    Task<string> HashAsync(string password, CancellationToken cancellationToken);
+    Task<bool> VerifyAsync(string password, string passwordHash, CancellationToken cancellationToken);
 }
 
-public sealed class BCryptPasswordHasher : IPasswordHasher
+public sealed class PasswordHashingCapacityException : Exception
 {
-    public string Hash(string password) => BCrypt.Net.BCrypt.HashPassword(password);
+    public PasswordHashingCapacityException()
+        : base("The password hashing worker pool is at capacity.")
+    {
+    }
+}
 
-    public bool Verify(string password, string passwordHash)
+public sealed class BCryptPasswordHasher : IPasswordHasher, IDisposable
+{
+    private readonly ConcurrencyLimiter _limiter;
+    private readonly int _workFactor;
+    private readonly TimeSpan _queueTimeout;
+
+    public BCryptPasswordHasher(IOptions<AuthOptions> options)
+    {
+        var configured = options.Value;
+        _workFactor = configured.PasswordHashWorkFactor;
+        _queueTimeout = TimeSpan.FromSeconds(configured.PasswordHashQueueTimeoutSeconds);
+        _limiter = new ConcurrencyLimiter(new ConcurrencyLimiterOptions
+        {
+            PermitLimit = configured.PasswordHashMaxConcurrency,
+            QueueLimit = configured.PasswordHashQueueLimit,
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+        });
+    }
+
+    public Task<string> HashAsync(string password, CancellationToken cancellationToken) =>
+        RunBoundedAsync(() => BCrypt.Net.BCrypt.HashPassword(password, _workFactor), cancellationToken);
+
+    public async Task<bool> VerifyAsync(
+        string password,
+        string passwordHash,
+        CancellationToken cancellationToken)
     {
         try
         {
-            return BCrypt.Net.BCrypt.Verify(password, passwordHash);
+            return await RunBoundedAsync(
+                () => BCrypt.Net.BCrypt.Verify(password, passwordHash),
+                cancellationToken);
         }
-        catch (Exception)
+        catch (PasswordHashingCapacityException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
         {
             return false;
         }
     }
+
+    private async Task<T> RunBoundedAsync<T>(Func<T> work, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(_queueTimeout);
+
+        RateLimitLease lease;
+        try
+        {
+            lease = await _limiter.AcquireAsync(1, timeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new PasswordHashingCapacityException();
+        }
+
+        using (lease)
+        {
+            if (!lease.IsAcquired)
+            {
+                throw new PasswordHashingCapacityException();
+            }
+
+            // BCrypt is CPU-bound and synchronous. Keep it off request threads while
+            // retaining the limiter lease until the native work has actually ended.
+            return await Task.Run(work, CancellationToken.None);
+        }
+    }
+
+    public void Dispose() => _limiter.Dispose();
 }
 
 public interface ITokenService

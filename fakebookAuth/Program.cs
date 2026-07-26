@@ -11,6 +11,11 @@ public static class Program
 
         var builder = WebApplication.CreateBuilder(args);
 
+        builder.Services.AddInternalRequestSigning(
+            builder.Configuration,
+            "Gateway:AuthenticationServiceSharedSecret",
+            "X-Internal-AuthenticationService-Secret");
+
         var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
         if (string.IsNullOrWhiteSpace(connectionString))
         {
@@ -44,6 +49,10 @@ public static class Program
             .Validate(options => options.OtpResendWindowMinutes > 0, "Auth:OtpResendWindowMinutes must be greater than zero.")
             .Validate(options => options.LoginFailureLimit > 0, "Auth:LoginFailureLimit must be greater than zero.")
             .Validate(options => options.LoginFailureWindowMinutes > 0, "Auth:LoginFailureWindowMinutes must be greater than zero.")
+            .Validate(options => options.PasswordHashWorkFactor is >= 10 and <= 14, "Auth:PasswordHashWorkFactor must be between 10 and 14.")
+            .Validate(options => options.PasswordHashMaxConcurrency is >= 1 and <= 16, "Auth:PasswordHashMaxConcurrency must be between 1 and 16.")
+            .Validate(options => options.PasswordHashQueueLimit is >= 0 and <= 256, "Auth:PasswordHashQueueLimit must be between 0 and 256.")
+            .Validate(options => options.PasswordHashQueueTimeoutSeconds is >= 1 and <= 30, "Auth:PasswordHashQueueTimeoutSeconds must be between 1 and 30.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.RefreshTokenCookieName), "Auth:RefreshTokenCookieName is required.")
             .Validate(options => options.RefreshTokenCookieName.All(character => character > 0x20 && character < 0x7f && character is not ';' and not ','), "Auth:RefreshTokenCookieName is invalid.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.RefreshTokenCookiePath), "Auth:RefreshTokenCookiePath is required.")
@@ -58,9 +67,8 @@ public static class Program
                 options => options.InternalSharedSecretBytes == 0 || options.InternalSharedSecretBytes >= 32,
                 "Gateway:InternalSharedSecret must be at least 32 bytes when configured.")
             .Validate(
-                options => options.AuthenticationServiceSharedSecretBytes == 0 ||
-                           options.AuthenticationServiceSharedSecretBytes >= 32,
-                "Gateway:AuthenticationServiceSharedSecret must be at least 32 bytes when configured.")
+                options => options.AuthenticationServiceSharedSecretBytes >= 32,
+                "Gateway:AuthenticationServiceSharedSecret is required and must be at least 32 bytes.")
             .ValidateOnStart();
 
         builder.Services
@@ -128,6 +136,8 @@ public static class Program
                 await next(context);
             }
         });
+
+        app.UseMiddleware<InternalRequestSignatureMiddleware>();
 
         app.MapGraphQL();
         app.MapControllers();
