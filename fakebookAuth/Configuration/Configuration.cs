@@ -33,7 +33,10 @@ public sealed class AuthOptions
     public int PasswordHashQueueLimit { get; init; } = 16;
     public int PasswordHashQueueTimeoutSeconds { get; init; } = 5;
     public string RefreshTokenCookieName { get; init; } = "fb_refresh";
-    public string RefreshTokenCookiePath { get; init; } = "/";
+    // Scoped to the Gateway GraphQL endpoint, the only path that reads this cookie. At "/" the
+    // browser also attached this 30-day credential to every /media request, sending it to the
+    // Upload server on the same edge origin.
+    public string RefreshTokenCookiePath { get; init; } = "/graphql";
     public string RefreshTokenCookieSameSite { get; init; } = "Lax";
     public bool RefreshTokenCookieHttpOnly { get; init; } = true;
     public bool RefreshTokenCookieSecure { get; init; } = true;
