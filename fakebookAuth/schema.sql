@@ -121,9 +121,8 @@ CREATE INDEX id_session_user_idx ON id_session (user_id, expires_at);
 CREATE INDEX id_session_refresh_token_session_idx
     ON id_session_refresh_token (session_id, created_at DESC);
 
-CREATE INDEX id_session_refresh_token_replaced_idx
-    ON id_session_refresh_token (token_hash)
-    WHERE replaced_at IS NOT NULL;
+-- No index on id_session_refresh_token (token_hash): token_hash is that table's primary
+-- key, and the only query reading replaced_at also filters on it.
 
 -- Lịch sử bảo mật: Thường xuyên query các log MỚI NHẤT của 1 user
 CREATE INDEX id_audit_user_time_idx ON id_audit_log (user_id, created_at DESC);
@@ -144,5 +143,13 @@ CREATE INDEX id_audit_otp_user_action_type_time_idx
 -- Truy vấn verify token cực nhanh lúc user submit OTP
 CREATE INDEX id_verification_token_idx ON id_verification (token_hash);
 
--- B-Tree index cho email đăng nhập
-CREATE INDEX id_user_email_idx ON id_user (email);
+-- OTP resend và quên mật khẩu tra theo (user_id, type), không phải token_hash
+CREATE INDEX id_verification_user_type_time_idx
+    ON id_verification (user_id, type, created_at DESC);
+
+-- Mọi lần đăng nhập đều tìm credential mật khẩu mới nhất của user
+CREATE INDEX id_credential_user_provider_idx
+    ON id_credential (user_id, provider, created_at DESC);
+
+-- Không tạo index riêng cho id_user (email): ràng buộc UNIQUE trên cột này đã được
+-- PostgreSQL hậu thuẫn bằng một unique B-tree.
