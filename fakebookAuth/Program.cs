@@ -117,6 +117,33 @@ public static class Program
 
         var app = builder.Build();
 
+        // Authentication is never reachable from outside; it only receives traffic from the
+        // gateway inside the private network, which emits a single authoritative
+        // X-Forwarded-For entry. Without this every request looked like it came from the gateway
+        // container, which silently turned per-IP login throttling into per-identifier
+        // throttling — five failed attempts locked the real account owner out, and it could not
+        // recover because the window only resets on a successful login. It also left every
+        // session record showing a container address with no device, OS or browser.
+        var forwardedHeaders = new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions
+        {
+            ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor,
+            ForwardLimit = 1
+        };
+        forwardedHeaders.KnownNetworks.Clear();
+        forwardedHeaders.KnownProxies.Clear();
+        foreach (var network in new[]
+                 {
+                     new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("127.0.0.0"), 8),
+                     new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("10.0.0.0"), 8),
+                     new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("172.16.0.0"), 12),
+                     new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("192.168.0.0"), 16),
+                     new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.IPv6Loopback, 128)
+                 })
+        {
+            forwardedHeaders.KnownNetworks.Add(network);
+        }
+        app.UseForwardedHeaders(forwardedHeaders);
+
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("RequestCorrelation");
         app.Use(async (context, next) =>
         {
