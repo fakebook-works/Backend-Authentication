@@ -106,6 +106,24 @@ public static class Program
         builder.Services.AddScoped<IVerificationRepository, VerificationRepository>();
         builder.Services.AddScoped<ISessionRepository, SessionRepository>();
         builder.Services.AddScoped<IAuditLogRepository, AuditLogRepository>();
+        builder.Services.AddScoped<IAuthRetentionRepository, AuthRetentionRepository>();
+        builder.Services
+            .AddOptions<AuthRetentionOptions>()
+            .Bind(builder.Configuration.GetSection(AuthRetentionOptions.SectionName))
+            .Validate(options => options.AuditLogRetentionDays is >= 1 and <= 3_650,
+                "AuthRetention:AuditLogRetentionDays must be between 1 and 3650.")
+            .Validate(options => options.VerificationRetentionDays is >= 1 and <= 365,
+                "AuthRetention:VerificationRetentionDays must be between 1 and 365.")
+            .Validate(options => options.ExpiredSessionRetentionDays is >= 1 and <= 3_650,
+                "AuthRetention:ExpiredSessionRetentionDays must be between 1 and 3650.")
+            .Validate(options => options.BatchSize is >= 1 and <= 10_000,
+                "AuthRetention:BatchSize must be between 1 and 10000.")
+            .Validate(options => options.MaxBatchesPerSweep is >= 1 and <= 1_000,
+                "AuthRetention:MaxBatchesPerSweep must be between 1 and 1000.")
+            .Validate(options => options.SweepIntervalMinutes is >= 1 and <= 1_440,
+                "AuthRetention:SweepIntervalMinutes must be between 1 and 1440.")
+            .ValidateOnStart();
+        builder.Services.AddHostedService<AuthRetentionService>();
         builder.Services.AddScoped<IAuthService, AuthService>();
         builder.Services.AddScoped<IPaymentPremiumService, PaymentPremiumService>();
 
