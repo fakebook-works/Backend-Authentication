@@ -169,6 +169,7 @@ health: String!
 me: UserType!
 mySessions: [SessionType!]!
 mySessionHistory: [SessionType!]!
+validateGatewaySession(input: GatewaySessionValidationInput!): GatewaySessionValidationPayload!
 ```
 
 Mutations:
@@ -201,9 +202,11 @@ Authorization: Bearer <accessToken>
 
 SocialGraph creates the canonical Fakebook user id first, then calls Authentication to create the identity row with that exact id.
 
+These internal endpoints authenticate with the `X-Internal-AuthenticationService-Secret` header, with `X-Gateway-Secret` accepted as a fallback. Backend-Payment instead authenticates against Authentication's GraphQL endpoint with `X-Payment-Secret` (see Payment Premium Validity).
+
 ```http
 POST /internal/users
-X-Gateway-Secret: <Gateway__InternalSharedSecret>
+X-Internal-AuthenticationService-Secret: <Gateway__InternalSharedSecret>
 ```
 
 Body:
@@ -222,7 +225,7 @@ SocialGraph deletion uses the idempotent companion endpoint:
 
 ```http
 DELETE /internal/users/{userId}
-X-Gateway-Secret: <Gateway__InternalSharedSecret>
+X-Internal-AuthenticationService-Secret: <Gateway__InternalSharedSecret>
 ```
 
 The identity is tombstoned instead of physically removed, all active sessions are
