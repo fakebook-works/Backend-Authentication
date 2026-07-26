@@ -319,9 +319,18 @@ public sealed class AuthService(
 
     public async Task<LoginPayload> LoginAsync(LoginInput input, CancellationToken cancellationToken)
     {
-        var identifier = NormalizeEmail(input.Identifier);
-        if (string.IsNullOrWhiteSpace(identifier) || string.IsNullOrWhiteSpace(input.Password))
+        // Every failed attempt is written to auth.id_audit_log, so the identifier is bounded and
+        // format-checked before it can reach the table. An unbounded value let an anonymous
+        // caller grow that table without limit, and anything past the btree page limit made the
+        // insert throw a server error instead of failing the login.
+        var identifier = NormalizeIdentifier(input.Identifier);
+        if (string.IsNullOrWhiteSpace(identifier) ||
+            string.IsNullOrWhiteSpace(input.Password) ||
+            identifier.Any(char.IsWhiteSpace) ||
+            !new EmailAddressAttribute().IsValid(identifier))
         {
+            // EmailAddressAttribute is deliberately lenient and accepts embedded whitespace,
+            // so that is rejected explicitly rather than being written to the audit log.
             throw InvalidCredentials();
         }
 
@@ -335,6 +344,18 @@ public sealed class AuthService(
             throw InvalidCredentials();
         }
 
+        var credential = await credentials.FindPasswordCredentialAsync(user.UserId, cancellationToken);
+        if (credential?.SecretHash is null ||
+            !await VerifyPasswordAsync(input.Password, credential.SecretHash, cancellationToken))
+        {
+            await RecordLoginFailureAsync(identifier, user.UserId, "INVALID_PASSWORD", metadata, cancellationToken);
+            throw InvalidCredentials();
+        }
+
+        // Account state is disclosed only after the caller has proven they hold the password.
+        // Checking it first let anyone probe which addresses were registered but unverified,
+        // one request per address, with no credential at all. The SPA still receives
+        // EMAIL_UNVERIFIED for a genuine sign-in and can open its verification screen.
         if (user.Status == AuthConstants.StatusUnverified)
         {
             throw GraphQlError("Please verify your email before signing in.", "EMAIL_UNVERIFIED");
@@ -343,14 +364,6 @@ public sealed class AuthService(
         if (user.Status is AuthConstants.StatusDisabled or AuthConstants.StatusDeleted)
         {
             throw GraphQlError("This account has been disabled or deleted.", "ACCOUNT_UNAVAILABLE");
-        }
-
-        var credential = await credentials.FindPasswordCredentialAsync(user.UserId, cancellationToken);
-        if (credential?.SecretHash is null ||
-            !await VerifyPasswordAsync(input.Password, credential.SecretHash, cancellationToken))
-        {
-            await RecordLoginFailureAsync(identifier, user.UserId, "INVALID_PASSWORD", metadata, cancellationToken);
-            throw InvalidCredentials();
         }
 
         var refreshToken = tokenService.CreateRefreshToken();
@@ -751,7 +764,7 @@ public sealed class AuthService(
         ResendEmailVerificationInput input,
         CancellationToken cancellationToken)
     {
-        var identifier = NormalizeEmail(input.Identifier);
+        var identifier = NormalizeIdentifier(input.Identifier);
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
@@ -760,20 +773,13 @@ public sealed class AuthService(
         try
         {
             var user = await users.FindByEmailAsync(connection, transaction, identifier, cancellationToken);
-            if (user is null)
+            if (user is null || user.Status != AuthConstants.StatusUnverified)
             {
-                throw GraphQlError("Account was not found.", "ACCOUNT_NOT_FOUND");
-            }
-
-            if (user.Status == AuthConstants.StatusActive)
-            {
+                // Uniform response. Returning ACCOUNT_NOT_FOUND, "already verified" and
+                // ACCOUNT_UNAVAILABLE as three distinguishable outcomes let an unauthenticated
+                // caller enumerate which addresses are registered, and in what state.
                 await transaction.CommitAsync(cancellationToken);
-                return new AuthActionPayload(true, "Email is already verified.");
-            }
-
-            if (user.Status is AuthConstants.StatusDisabled or AuthConstants.StatusDeleted)
-            {
-                throw GraphQlError("This account has been disabled or deleted.", "ACCOUNT_UNAVAILABLE");
+                return new AuthActionPayload(true, VerificationCodeSentMessage);
             }
 
             await EnsureOtpCooldownAsync(
@@ -818,9 +824,18 @@ public sealed class AuthService(
 
             await transaction.CommitAsync(cancellationToken);
 
-            await emailSender.SendVerificationOtpAsync(user.Email, otp, cancellationToken);
-            logger.LogInformation("Email verification OTP resent for user {UserId}.", user.UserId);
-            return new AuthActionPayload(true, "Verification code sent. Please check your email.");
+            await SendQuietlyAsync(
+                () => emailSender.SendVerificationOtpAsync(user.Email, otp, cancellationToken),
+                "email verification",
+                user.UserId);
+            return new AuthActionPayload(true, VerificationCodeSentMessage);
+        }
+        catch (GraphQLException exception) when (IsAccountRevealingThrottleError(exception))
+        {
+            // Throttling only engages for a real, unverified account, so reporting it would
+            // reintroduce exactly the enumeration channel closed above.
+            await RollbackQuietlyAsync(transaction, cancellationToken);
+            return new AuthActionPayload(true, VerificationCodeSentMessage);
         }
         catch (GraphQLException)
         {
@@ -838,7 +853,7 @@ public sealed class AuthService(
         RequestPasswordResetInput input,
         CancellationToken cancellationToken)
     {
-        var identifier = NormalizeEmail(input.Identifier);
+        var identifier = NormalizeIdentifier(input.Identifier);
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
         IdentityUser? userToEmail = null;
         string? otpToEmail = null;
@@ -898,6 +913,14 @@ public sealed class AuthService(
 
             await transaction.CommitAsync(cancellationToken);
         }
+        catch (GraphQLException exception) when (IsAccountRevealingThrottleError(exception))
+        {
+            // OTP throttling only engages for a real account, so surfacing it would tell an
+            // anonymous caller that the address is registered — the very thing the generic
+            // success message below is there to hide.
+            await RollbackQuietlyAsync(transaction, cancellationToken);
+            return new AuthActionPayload(true, PasswordResetSentMessage);
+        }
         catch (GraphQLException)
         {
             await RollbackQuietlyAsync(transaction, cancellationToken);
@@ -911,15 +934,13 @@ public sealed class AuthService(
 
         if (userToEmail is not null && otpToEmail is not null)
         {
-            await emailSender.SendPasswordResetOtpAsync(
-                userToEmail.Email,
-                otpToEmail,
-                cancellationToken);
-
-            logger.LogInformation("Password reset OTP sent for user {UserId}.", userToEmail.UserId);
+            await SendQuietlyAsync(
+                () => emailSender.SendPasswordResetOtpAsync(userToEmail.Email, otpToEmail, cancellationToken),
+                "password reset",
+                userToEmail.UserId);
         }
 
-        return new AuthActionPayload(true, "If the account exists, a password reset code has been sent.");
+        return new AuthActionPayload(true, PasswordResetSentMessage);
     }
 
     public async Task<AuthActionPayload> ResetPasswordAsync(
@@ -1188,6 +1209,58 @@ public sealed class AuthService(
     }
 
     private static string NormalizeEmail(string value) => value.Trim().ToLowerInvariant();
+
+    /// <summary>
+    /// Maximum length of an email address per RFC 5321. Identifiers arriving on unauthenticated
+    /// endpoints are capped at this length before they are persisted or logged.
+    /// </summary>
+    private const int MaxIdentifierLength = 254;
+
+    private const string VerificationCodeSentMessage =
+        "If the account exists and still needs verification, a code has been sent.";
+
+    private const string PasswordResetSentMessage =
+        "If the account exists, a password reset code has been sent.";
+
+    /// <summary>
+    /// Sends a transactional email without letting a delivery failure reach the caller. The
+    /// database work is already committed by this point, and an SMTP exception escaping to the
+    /// client both leaked server detail and revealed that the address existed — the send only
+    /// happens for a real account.
+    /// </summary>
+    private async Task SendQuietlyAsync(Func<Task> send, string purpose, long userId)
+    {
+        try
+        {
+            await send();
+            logger.LogInformation("Sent {Purpose} OTP for user {UserId}.", purpose, userId);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Failed to send {Purpose} OTP for user {UserId}.", purpose, userId);
+        }
+    }
+
+    private static string NormalizeIdentifier(string? value)
+    {
+        var identifier = NormalizeEmail(value ?? string.Empty);
+        return identifier.Length > MaxIdentifierLength
+            ? identifier[..MaxIdentifierLength]
+            : identifier;
+    }
+
+    /// <summary>
+    /// True for errors that would otherwise reveal whether an account exists: throttling only
+    /// engages for a real account, so an attacker could tell registered addresses apart from
+    /// unregistered ones purely by which error came back.
+    /// </summary>
+    private static bool IsAccountRevealingThrottleError(GraphQLException exception) =>
+        exception.Errors.Any(error =>
+            error.Code is "OTP_COOLDOWN" or "OTP_RESEND_RATE_LIMITED");
 
     private string ResolveRefreshToken(string? value, bool allowMissing = false)
     {
