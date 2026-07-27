@@ -1,5 +1,8 @@
 using System.Data.Common;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using fakebookAuth;
@@ -11,6 +14,7 @@ using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 using Xunit;
 
 namespace fakebookAuth.Tests;
@@ -256,6 +260,39 @@ public sealed class AuthenticationContractTests
         Assert.Equal("test-key-1", header.RootElement.GetProperty("kid").GetString());
         Assert.True(service.TryValidateAccessToken(token, out var principal));
         Assert.Equal(new AccessTokenPrincipal(123, 456), principal);
+    }
+
+    [Fact]
+    public void AccessToken_RejectsWrongKeyIdAndUnconfiguredLegacyAlgorithm()
+    {
+        using var rsa = RSA.Create(2048);
+        var options = new JwtOptions
+        {
+            PrivateKeyBase64 = Convert.ToBase64String(rsa.ExportPkcs8PrivateKey()),
+            KeyId = "expected-key",
+            Issuer = "test-issuer",
+            Audience = "test-audience",
+            LegacySigningKey = string.Empty
+        };
+        using var service = new TokenService(Options.Create(options));
+        var handler = new JwtSecurityTokenHandler { MapInboundClaims = false };
+        var descriptor = new SecurityTokenDescriptor
+        {
+            Issuer = options.Issuer,
+            Audience = options.Audience,
+            Subject = new ClaimsIdentity([new Claim("user_id", "123", ClaimValueTypes.Integer64)]),
+            Expires = DateTime.UtcNow.AddMinutes(5)
+        };
+
+        descriptor.SigningCredentials = new SigningCredentials(
+            new RsaSecurityKey(rsa) { KeyId = "wrong-key" },
+            SecurityAlgorithms.RsaSha256);
+        Assert.False(service.TryValidateAccessToken(handler.CreateEncodedJwt(descriptor), out _));
+
+        descriptor.SigningCredentials = new SigningCredentials(
+            new SymmetricSecurityKey(Encoding.UTF8.GetBytes("legacy-key-not-enabled-1234567890")),
+            SecurityAlgorithms.HmacSha256);
+        Assert.False(service.TryValidateAccessToken(handler.CreateEncodedJwt(descriptor), out _));
     }
 
     [Fact]

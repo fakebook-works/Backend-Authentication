@@ -1,9 +1,11 @@
 using System.Globalization;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 using System.Threading.RateLimiting;
 
 namespace fakebookAuth;
@@ -157,10 +159,15 @@ public static class JwtKeyMaterial
 
 public sealed class TokenService : ITokenService, IDisposable
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private const int MaximumTokenSizeInBytes = 16 * 1024;
     private readonly JwtOptions _options;
     private readonly RSA _privateKey;
     private readonly RSA _publicKey;
+    private readonly RsaSecurityKey _signingKey;
+    private readonly RsaSecurityKey _validationKey;
+    private readonly SymmetricSecurityKey? _legacyValidationKey;
+    private readonly JwtSecurityTokenHandler _handler;
+    private readonly TokenValidationParameters _validationParameters;
 
     public TokenService(IOptions<JwtOptions> options)
     {
@@ -168,44 +175,75 @@ public sealed class TokenService : ITokenService, IDisposable
         _privateKey = JwtKeyMaterial.ImportPrivateKey(_options.PrivateKeyBase64);
         _publicKey = RSA.Create();
         _publicKey.ImportParameters(_privateKey.ExportParameters(includePrivateParameters: false));
+        _signingKey = new RsaSecurityKey(_privateKey) { KeyId = _options.KeyId };
+        _validationKey = new RsaSecurityKey(_publicKey) { KeyId = _options.KeyId };
+        _legacyValidationKey = string.IsNullOrEmpty(_options.LegacySigningKey)
+            ? null
+            : new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_options.LegacySigningKey))
+            {
+                KeyId = "legacy-hs256"
+            };
+        _handler = new JwtSecurityTokenHandler
+        {
+            MapInboundClaims = false,
+            MaximumTokenSizeInBytes = MaximumTokenSizeInBytes,
+            SetDefaultTimesOnTokenCreation = false
+        };
+
+        var validationKeys = _legacyValidationKey is null
+            ? new SecurityKey[] { _validationKey }
+            : new SecurityKey[] { _validationKey, _legacyValidationKey };
+        var validAlgorithms = _legacyValidationKey is null
+            ? new[] { SecurityAlgorithms.RsaSha256 }
+            : new[] { SecurityAlgorithms.RsaSha256, SecurityAlgorithms.HmacSha256 };
+
+        _validationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = _options.Issuer,
+            ValidateAudience = true,
+            ValidAudience = _options.Audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKeys = validationKeys,
+            ValidAlgorithms = validAlgorithms,
+            RequireSignedTokens = true,
+            RequireExpirationTime = true,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero,
+            TryAllIssuerSigningKeys = _legacyValidationKey is not null,
+            AlgorithmValidator = ValidateAlgorithm
+        };
     }
 
     public string CreateAccessToken(IdentityUser user, long? sessionId = null)
     {
         var now = DateTimeOffset.UtcNow;
         var expiresAt = now.AddMinutes(_options.AccessTokenMinutes);
-
-        var header = new Dictionary<string, object?>
+        var claims = new List<Claim>
         {
-            ["alg"] = "RS256",
-            ["typ"] = "JWT",
-            ["kid"] = _options.KeyId
-        };
-
-        var payload = new Dictionary<string, object?>
-        {
-            ["iss"] = _options.Issuer,
-            ["aud"] = _options.Audience,
-            ["sub"] = user.UserId.ToString(CultureInfo.InvariantCulture),
-            ["user_id"] = user.UserId,
-            ["iat"] = now.ToUnixTimeSeconds(),
-            ["nbf"] = now.ToUnixTimeSeconds(),
-            ["exp"] = expiresAt.ToUnixTimeSeconds(),
-            ["jti"] = Guid.NewGuid().ToString("N")
+            new(JwtRegisteredClaimNames.Sub, user.UserId.ToString(CultureInfo.InvariantCulture)),
+            new("user_id", user.UserId.ToString(CultureInfo.InvariantCulture), ClaimValueTypes.Integer64),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N"))
         };
 
         if (sessionId is not null)
         {
-            payload["sid"] = sessionId.Value;
+            claims.Add(new Claim(
+                "sid",
+                sessionId.Value.ToString(CultureInfo.InvariantCulture),
+                ClaimValueTypes.Integer64));
         }
 
-        var unsignedToken = $"{EncodeJson(header)}.{EncodeJson(payload)}";
-        var signature = WebEncoders.Base64UrlEncode(_privateKey.SignData(
-            Encoding.ASCII.GetBytes(unsignedToken),
-            HashAlgorithmName.SHA256,
-            RSASignaturePadding.Pkcs1));
-
-        return $"{unsignedToken}.{signature}";
+        return _handler.CreateEncodedJwt(new SecurityTokenDescriptor
+        {
+            Issuer = _options.Issuer,
+            Audience = _options.Audience,
+            Subject = new ClaimsIdentity(claims),
+            IssuedAt = now.UtcDateTime,
+            NotBefore = now.UtcDateTime,
+            Expires = expiresAt.UtcDateTime,
+            SigningCredentials = new SigningCredentials(_signingKey, SecurityAlgorithms.RsaSha256)
+        });
     }
 
     public string CreateRefreshToken()
@@ -217,77 +255,40 @@ public sealed class TokenService : ITokenService, IDisposable
     public bool TryValidateAccessToken(string token, out AccessTokenPrincipal? principal)
     {
         principal = null;
+        if (string.IsNullOrWhiteSpace(token) ||
+            Encoding.UTF8.GetByteCount(token) > MaximumTokenSizeInBytes)
+        {
+            return false;
+        }
 
         try
         {
-            var parts = token.Split('.');
-            if (parts.Length != 3)
-            {
-                return false;
-            }
-
-            using var header = JsonDocument.Parse(WebEncoders.Base64UrlDecode(parts[0]));
-            if (!header.RootElement.TryGetProperty("alg", out var alg))
-            {
-                return false;
-            }
-
-            var unsignedToken = $"{parts[0]}.{parts[1]}";
-            var signature = WebEncoders.Base64UrlDecode(parts[2]);
-            var algorithm = alg.GetString();
-            var signatureIsValid = algorithm switch
-            {
-                "RS256" =>
-                    header.RootElement.TryGetProperty("kid", out var keyId) &&
-                    keyId.GetString() == _options.KeyId &&
-                    _publicKey.VerifyData(
-                        Encoding.ASCII.GetBytes(unsignedToken),
-                        signature,
-                        HashAlgorithmName.SHA256,
-                        RSASignaturePadding.Pkcs1),
-                "HS256" when !string.IsNullOrEmpty(_options.LegacySigningKey) =>
-                    VerifyLegacySignature(unsignedToken, signature, _options.LegacySigningKey),
-                _ => false
-            };
-            if (!signatureIsValid)
-            {
-                return false;
-            }
-
-            using var payload = JsonDocument.Parse(WebEncoders.Base64UrlDecode(parts[1]));
-            var root = payload.RootElement;
-
-            if (!root.TryGetProperty("iss", out var issuer) ||
-                issuer.GetString() != _options.Issuer ||
-                !root.TryGetProperty("aud", out var audience) ||
-                audience.GetString() != _options.Audience)
-            {
-                return false;
-            }
-
-            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            if (!root.TryGetProperty("exp", out var expiresAt) ||
-                expiresAt.GetInt64() <= now)
-            {
-                return false;
-            }
-
-            if (root.TryGetProperty("nbf", out var notBefore) &&
-                notBefore.GetInt64() > now)
-            {
-                return false;
-            }
-
-            if (!root.TryGetProperty("user_id", out var userIdElement) ||
-                !userIdElement.TryGetInt64(out var userId))
+            var claims = _handler.ValidateToken(token, _validationParameters, out var validatedToken);
+            if (validatedToken is not JwtSecurityToken ||
+                !long.TryParse(
+                    claims.FindFirst("user_id")?.Value,
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out var userId) ||
+                userId <= 0)
             {
                 return false;
             }
 
             long? sessionId = null;
-            if (root.TryGetProperty("sid", out var sessionElement) &&
-                sessionElement.TryGetInt64(out var parsedSessionId))
+            var sessionClaim = claims.FindFirst("sid")?.Value;
+            if (sessionClaim is not null)
             {
+                if (!long.TryParse(
+                        sessionClaim,
+                        NumberStyles.None,
+                        CultureInfo.InvariantCulture,
+                        out var parsedSessionId) ||
+                    parsedSessionId <= 0)
+                {
+                    return false;
+                }
+
                 sessionId = parsedSessionId;
             }
 
@@ -300,20 +301,21 @@ public sealed class TokenService : ITokenService, IDisposable
         }
     }
 
-    private static string EncodeJson(object value)
-    {
-        var json = JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
-        return WebEncoders.Base64UrlEncode(json);
-    }
-
-    private static bool VerifyLegacySignature(string token, byte[] signature, string signingKey)
-    {
-        var expected = HMACSHA256.HashData(
-            Encoding.UTF8.GetBytes(signingKey),
-            Encoding.ASCII.GetBytes(token));
-        return expected.Length == signature.Length &&
-               CryptographicOperations.FixedTimeEquals(expected, signature);
-    }
+    private bool ValidateAlgorithm(
+        string algorithm,
+        SecurityKey securityKey,
+        SecurityToken _,
+        TokenValidationParameters __) =>
+        algorithm switch
+        {
+            SecurityAlgorithms.RsaSha256 =>
+                securityKey is RsaSecurityKey rsaKey &&
+                rsaKey.KeyId == _options.KeyId,
+            SecurityAlgorithms.HmacSha256 =>
+                _legacyValidationKey is not null &&
+                ReferenceEquals(securityKey, _legacyValidationKey),
+            _ => false
+        };
 
     public void Dispose()
     {
