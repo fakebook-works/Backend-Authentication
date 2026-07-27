@@ -59,7 +59,7 @@ public sealed class AuthService(
     public async Task<RegisterPayload> RegisterAsync(RegisterInput input, CancellationToken cancellationToken)
     {
         var register = NormalizeAndValidate(input);
-        var message = await CreateUnverifiedUserAsync(ids.NewId(), register, cancellationToken);
+        var message = await CreateUnverifiedUserAsync(ids.NewId(), register, idempotentProvisioning: false, cancellationToken);
         return new RegisterPayload(true, message);
     }
 
@@ -75,7 +75,7 @@ public sealed class AuthService(
         }
 
         var register = NormalizeAndValidate(input);
-        var message = await CreateUnverifiedUserAsync(input.UserId, register, cancellationToken);
+        var message = await CreateUnverifiedUserAsync(input.UserId, register, idempotentProvisioning: true, cancellationToken);
         return new AuthActionPayload(true, message);
     }
 
@@ -133,8 +133,15 @@ public sealed class AuthService(
     private async Task<string> CreateUnverifiedUserAsync(
         long userId,
         NormalizedRegisterInput register,
+        bool idempotentProvisioning,
         CancellationToken cancellationToken)
     {
+        if (idempotentProvisioning &&
+            await ResolveExistingProvisioningAsync(userId, register.Email, cancellationToken))
+        {
+            return "User identity is already provisioned.";
+        }
+
         // Do the bounded CPU work before opening a transaction so a full BCrypt
         // queue cannot also exhaust the database pool with idle transactions.
         var passwordHash = await HashPasswordAsync(register.Password, cancellationToken);
@@ -150,6 +157,22 @@ public sealed class AuthService(
                     register.Email,
                     cancellationToken))
             {
+                if (idempotentProvisioning)
+                {
+                    var existing = await users.FindByEmailAsync(
+                        connection,
+                        transaction,
+                        register.Email,
+                        cancellationToken);
+                    if (existing is not null &&
+                        existing.UserId == userId &&
+                        existing.Status != AuthConstants.StatusDeleted)
+                    {
+                        await transaction.CommitAsync(cancellationToken);
+                        return "User identity is already provisioned.";
+                    }
+                }
+
                 throw GraphQlError("Email already exists.", "IDENTIFIER_EXISTS");
             }
 
@@ -192,6 +215,12 @@ public sealed class AuthService(
         catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.UniqueViolation)
         {
             await RollbackQuietlyAsync(transaction, cancellationToken);
+            if (idempotentProvisioning &&
+                await ResolveExistingProvisioningAsync(userId, register.Email, cancellationToken))
+            {
+                return "User identity is already provisioned.";
+            }
+
             throw GraphQlError("Email already exists.", "IDENTIFIER_EXISTS");
         }
         catch
@@ -223,6 +252,31 @@ public sealed class AuthService(
 
             return "Registration successful, but the verification email could not be sent. Please request a new verification code.";
         }
+    }
+
+    private async Task<bool> ResolveExistingProvisioningAsync(
+        long userId,
+        string email,
+        CancellationToken cancellationToken)
+    {
+        var byId = await users.FindByIdAsync(userId, cancellationToken);
+        if (byId is not null)
+        {
+            if (byId.Status != AuthConstants.StatusDeleted &&
+                string.Equals(byId.Email, email, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            throw GraphQlError("User identity conflicts with an existing account.", "IDENTIFIER_EXISTS");
+        }
+
+        if (await users.FindByEmailAsync(email, cancellationToken) is not null)
+        {
+            throw GraphQlError("Email already exists.", "IDENTIFIER_EXISTS");
+        }
+
+        return false;
     }
 
     public async Task<VerifyEmailPayload> VerifyEmailAsync(VerifyEmailInput input, CancellationToken cancellationToken)
@@ -366,8 +420,10 @@ public sealed class AuthService(
             throw GraphQlError("This account has been disabled or deleted.", "ACCOUNT_UNAVAILABLE");
         }
 
+        var sessionCreatedAt = DateTimeOffset.UtcNow;
         var refreshToken = tokenService.CreateRefreshToken();
-        var refreshExpiresAt = DateTimeOffset.UtcNow.AddDays(_authOptions.RefreshTokenDays);
+        var refreshExpiresAt = sessionCreatedAt.AddDays(_authOptions.RefreshTokenDays);
+        var absoluteExpiresAt = sessionCreatedAt.AddDays(_authOptions.AbsoluteSessionDays);
         var sessionId = ids.NewId();
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
@@ -383,6 +439,7 @@ public sealed class AuthService(
                 TokenHashing.Sha256Hex(refreshToken),
                 metadata,
                 refreshExpiresAt,
+                absoluteExpiresAt,
                 cancellationToken);
 
             await credentials.MarkUsedAsync(connection, transaction, credential.CredentialId, cancellationToken);
@@ -448,7 +505,8 @@ public sealed class AuthService(
                 if (replacedToken is not null)
                 {
                     if (replacedToken.SessionRevokedAt is not null ||
-                        replacedToken.SessionExpiresAt <= now)
+                        replacedToken.SessionExpiresAt <= now ||
+                        replacedToken.SessionAbsoluteExpiresAt <= now)
                     {
                         await auditLogs.InsertAsync(
                             connection,
@@ -528,7 +586,10 @@ public sealed class AuthService(
             }
 
             var newRefreshToken = tokenService.CreateRefreshToken();
-            var refreshExpiresAt = now.AddDays(_authOptions.RefreshTokenDays);
+            var refreshExpiresAt = SessionLifetime.CapRefreshExpiry(
+                now,
+                _authOptions.RefreshTokenDays,
+                session.AbsoluteExpiresAt);
 
             await sessions.RotateRefreshTokenAsync(
                 connection,
@@ -1583,6 +1644,10 @@ public sealed class AuthService(
         string refreshToken,
         DateTimeOffset expiresAt)
     {
+        var remainingSeconds = Math.Clamp(
+            (long)Math.Ceiling((expiresAt - DateTimeOffset.UtcNow).TotalSeconds),
+            0,
+            int.MaxValue);
         var instruction = new GatewayCookieInstruction(
             "SET",
             _authOptions.RefreshTokenCookieName,
@@ -1591,7 +1656,7 @@ public sealed class AuthService(
             _authOptions.RefreshTokenCookieSameSite,
             _authOptions.RefreshTokenCookieHttpOnly,
             _authOptions.RefreshTokenCookieSecure,
-            _authOptions.RefreshTokenCookieMaxAgeSeconds,
+            (int)remainingSeconds,
             expiresAt);
         WriteGatewayCookieInstructionHeader(instruction);
         return instruction;

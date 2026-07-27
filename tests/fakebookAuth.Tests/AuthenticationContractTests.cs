@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using fakebookAuth;
@@ -85,6 +86,48 @@ public sealed class AuthenticationContractTests
                 CancellationToken.None));
 
         Assert.Equal("INVALID_EMAIL", exception.Errors[0].Code);
+    }
+
+    [Fact]
+    public async Task InternalProvisioning_RetryIsIdempotentAndSkipsBcrypt()
+    {
+        const string dedicatedSecret = "dedicated-authentication-secret-at-least-32-bytes";
+        var existing = new IdentityUser
+        {
+            UserId = 123,
+            Email = "a@example.com",
+            Status = AuthConstants.StatusUnverified
+        };
+        var hasher = new RecordingPasswordHasher();
+        var context = new DefaultHttpContext();
+        context.Request.Headers["X-Internal-AuthenticationService-Secret"] = dedicatedSecret;
+        var service = new AuthService(
+            dataSource: null!,
+            users: new RecordingUserRepository(existing),
+            credentials: null!,
+            verifications: null!,
+            sessions: null!,
+            auditLogs: null!,
+            passwordHasher: hasher,
+            tokenService: null!,
+            emailSender: null!,
+            ids: null!,
+            new HttpContextAccessor { HttpContext = context },
+            NullLogger<AuthService>.Instance,
+            Options.Create(new AuthOptions()),
+            Options.Create(new GatewayOptions
+            {
+                AuthenticationServiceSharedSecret = dedicatedSecret
+            }),
+            Options.Create(new SmtpOptions()));
+
+        var result = await service.CreateUserIdentityAsync(
+            new CreateUserIdentityInput(123, "a@example.com", "Password123!"),
+            CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal("User identity is already provisioned.", result.Message);
+        Assert.Equal(0, hasher.HashCalls);
     }
 
     [Fact]
@@ -183,9 +226,11 @@ public sealed class AuthenticationContractTests
     [Fact]
     public void AccessToken_DoesNotContainUnsupportedIdentityClaims()
     {
+        using var rsa = RSA.Create(2048);
         var service = new TokenService(Options.Create(new JwtOptions
         {
-            SigningKey = "test-jwt-signing-key-at-least-32-bytes",
+            PrivateKeyBase64 = Convert.ToBase64String(rsa.ExportPkcs8PrivateKey()),
+            KeyId = "test-key-1",
             Issuer = "test-issuer",
             Audience = "test-audience"
         }));
@@ -206,6 +251,11 @@ public sealed class AuthenticationContractTests
         Assert.False(payload.RootElement.TryGetProperty("name", out _));
         Assert.Equal(123, payload.RootElement.GetProperty("user_id").GetInt64());
         Assert.Equal(456, payload.RootElement.GetProperty("sid").GetInt64());
+        using var header = JsonDocument.Parse(WebEncoders.Base64UrlDecode(token.Split('.')[0]));
+        Assert.Equal("RS256", header.RootElement.GetProperty("alg").GetString());
+        Assert.Equal("test-key-1", header.RootElement.GetProperty("kid").GetString());
+        Assert.True(service.TryValidateAccessToken(token, out var principal));
+        Assert.Equal(new AccessTokenPrincipal(123, 456), principal);
     }
 
     [Fact]
@@ -330,7 +380,7 @@ public sealed class AuthenticationContractTests
             Options.Create(new SmtpOptions()));
     }
 
-    private sealed class RecordingUserRepository : IUserRepository
+    private sealed class RecordingUserRepository(IdentityUser? existing = null) : IUserRepository
     {
         public DateTimeOffset? LastValidDate { get; private set; }
 
@@ -357,11 +407,15 @@ public sealed class AuthenticationContractTests
 
         public Task<IdentityUser?> FindByEmailAsync(
             string email,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken) => Task.FromResult(
+                existing is not null && string.Equals(existing.Email, email, StringComparison.OrdinalIgnoreCase)
+                    ? existing
+                    : null);
 
         public Task<IdentityUser?> FindByIdAsync(
             long userId,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            CancellationToken cancellationToken) => Task.FromResult(
+                existing?.UserId == userId ? existing : null);
 
         public Task<IdentityUser?> FindByIdAsync(
             DbConnection connection,
@@ -386,5 +440,19 @@ public sealed class AuthenticationContractTests
             DbTransaction transaction,
             long userId,
             CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingPasswordHasher : IPasswordHasher
+    {
+        public int HashCalls { get; private set; }
+
+        public Task<string> HashAsync(string password, CancellationToken cancellationToken)
+        {
+            HashCalls++;
+            return Task.FromResult("unexpected");
+        }
+
+        public Task<bool> VerifyAsync(string password, string passwordHash, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
     }
 }

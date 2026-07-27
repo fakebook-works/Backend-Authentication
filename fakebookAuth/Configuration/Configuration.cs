@@ -8,10 +8,12 @@ public sealed class JwtOptions
 
     public string Issuer { get; init; } = "fakebook-auth";
     public string Audience { get; init; } = "fakebook";
-    public string SigningKey { get; init; } = string.Empty;
+    /// <summary>PKCS#8 RSA private key encoded as base64 (DER), never PEM text in environment variables.</summary>
+    public string PrivateKeyBase64 { get; init; } = string.Empty;
+    public string KeyId { get; init; } = "fakebook-rs256-2026-01";
+    /// <summary>Temporary migration-only verifier for access tokens issued before the RS256 rollout.</summary>
+    public string LegacySigningKey { get; init; } = string.Empty;
     public int AccessTokenMinutes { get; init; } = 15;
-
-    public int SigningKeyBytes => Encoding.UTF8.GetByteCount(SigningKey);
 }
 
 public sealed class AuthOptions
@@ -19,6 +21,7 @@ public sealed class AuthOptions
     public const string SectionName = "Auth";
 
     public int RefreshTokenDays { get; init; } = 30;
+    public int AbsoluteSessionDays { get; init; } = 90;
     public int EmailVerificationMinutes { get; init; } = 15;
     public int PasswordResetMinutes { get; init; } = 15;
     public int OtpCooldownSeconds { get; init; } = 60;
@@ -41,8 +44,6 @@ public sealed class AuthOptions
     public bool RefreshTokenCookieHttpOnly { get; init; } = true;
     public bool RefreshTokenCookieSecure { get; init; } = true;
 
-    public int RefreshTokenCookieMaxAgeSeconds =>
-        checked(RefreshTokenDays * 24 * 60 * 60);
 }
 
 public sealed class GatewayOptions

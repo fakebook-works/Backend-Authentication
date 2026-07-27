@@ -39,8 +39,10 @@ public static class AuthHealthEndpoints
 
     public static async Task<IResult> ReadyAsync(
         IAuthDatabaseReadinessProbe database,
+        IInternalNonceStore nonceStore,
         CancellationToken cancellationToken) =>
-        await database.IsReadyAsync(cancellationToken)
+        await database.IsReadyAsync(cancellationToken) &&
+        await nonceStore.IsAvailableAsync(cancellationToken)
             ? Results.Ok(new AuthHealthResponse("ready", "Authentication"))
             : Results.Json(
                 new AuthHealthResponse("not-ready", "Authentication"),

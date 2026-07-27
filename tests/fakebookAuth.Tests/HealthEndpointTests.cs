@@ -30,7 +30,10 @@ public sealed class HealthEndpointTests
     {
         var probe = new StubReadinessProbe(databaseReady);
 
-        var result = await AuthHealthEndpoints.ReadyAsync(probe, CancellationToken.None);
+        var result = await AuthHealthEndpoints.ReadyAsync(
+            probe,
+            new StubNonceStore(available: true),
+            CancellationToken.None);
 
         Assert.Equal(
             expectedStatus,
@@ -39,6 +42,19 @@ public sealed class HealthEndpointTests
             Assert.IsAssignableFrom<IValueHttpResult>(result).Value);
         Assert.Equal(expectedState, payload.Status);
         Assert.True(probe.WasCalled);
+    }
+
+    [Fact]
+    public async Task Ready_FailsWhenDistributedReplayProtectionIsUnavailable()
+    {
+        var result = await AuthHealthEndpoints.ReadyAsync(
+            new StubReadinessProbe(true),
+            new StubNonceStore(available: false),
+            CancellationToken.None);
+
+        Assert.Equal(
+            StatusCodes.Status503ServiceUnavailable,
+            Assert.IsAssignableFrom<IStatusCodeHttpResult>(result).StatusCode);
     }
 
     private sealed class StubReadinessProbe(bool result) : IAuthDatabaseReadinessProbe
@@ -50,5 +66,17 @@ public sealed class HealthEndpointTests
             WasCalled = true;
             return Task.FromResult(result);
         }
+    }
+
+    private sealed class StubNonceStore(bool available) : IInternalNonceStore
+    {
+        public Task<InternalNonceClaimResult> TryClaimAsync(
+            string audience,
+            string nonce,
+            TimeSpan retention,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(available ? InternalNonceClaimResult.Claimed : InternalNonceClaimResult.Unavailable);
+
+        public Task<bool> IsAvailableAsync(CancellationToken cancellationToken) => Task.FromResult(available);
     }
 }

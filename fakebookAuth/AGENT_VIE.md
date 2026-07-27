@@ -11,7 +11,7 @@ Consumer quan trọng nhất trong giai đoạn tiếp theo là GraphQL Federati
 - Database: PostgreSQL.
 - Data access: Dapper + Npgsql.
 - Hash password: BCrypt.
-- Access token: JWT HS256 tự build trong project.
+- Access token: JWT RS256 có `kid`, tạo bằng thư viện chuẩn; HS256 chỉ dùng tạm khi chuyển đổi.
 - Refresh token trong DB: chỉ lưu SHA-256 hash, không lưu raw token.
 - Mô hình refresh token với Gateway: Auth subgraph trả token + cookie instruction; Gateway là nơi set/clear cookie thật cho browser.
 - Gửi email: SMTP qua `SmtpEmailSender`.
@@ -43,10 +43,11 @@ Connection string được đọc theo thứ tự:
 Cấu hình JWT bắt buộc:
 
 ```text
-Jwt__SigningKey
+Jwt__PrivateKeyBase64
+Jwt__KeyId
 ```
 
-`Jwt:SigningKey` phải dài tối thiểu 32 bytes.
+`Jwt:PrivateKeyBase64` là private key RSA PKCS#8 tối thiểu 2048 bit và chỉ Auth được nhận key này.
 
 Các environment variable hữu ích:
 
@@ -55,7 +56,9 @@ ConnectionStrings__DefaultConnection
 POSTGRES_CONNECTION_STRING
 Jwt__Issuer
 Jwt__Audience
-Jwt__SigningKey
+Jwt__PrivateKeyBase64
+Jwt__KeyId
+Jwt__LegacySigningKey
 Jwt__AccessTokenMinutes
 Auth__RefreshTokenDays
 Auth__EmailVerificationMinutes
@@ -189,7 +192,7 @@ Auth service log các sự kiện quan trọng:
 
 ## Access Token
 
-Access token là JWT HS256 do `TokenService` tạo.
+Access token là JWT RS256 do `TokenService` tạo thông qua thư viện identity-model chuẩn.
 
 Claims chính:
 
@@ -1152,7 +1155,8 @@ Ví dụ chạy bằng environment variables:
 
 ```powershell
 $env:ConnectionStrings__DefaultConnection="Host=localhost;Port=5432;Database=fakebook;Username=postgres;Password=..."
-$env:Jwt__SigningKey="at-least-32-bytes-long-signing-key"
+$env:Jwt__PrivateKeyBase64="<PKCS8-RSA-private-key-base64>"
+$env:Jwt__KeyId="fakebook-rs256-<fingerprint>"
 $env:Smtp__Enabled="false"
 dotnet run --project .\fakebookAuth\fakebookAuth.csproj
 ```

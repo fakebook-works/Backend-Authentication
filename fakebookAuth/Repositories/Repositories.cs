@@ -620,6 +620,7 @@ public interface ISessionRepository
         string refreshTokenHash,
         ClientMetadata metadata,
         DateTimeOffset expiresAt,
+        DateTimeOffset absoluteExpiresAt,
         CancellationToken cancellationToken);
 
     Task<UserSession?> FindActiveByRefreshTokenHashAsync(
@@ -711,6 +712,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         string refreshTokenHash,
         ClientMetadata metadata,
         DateTimeOffset expiresAt,
+        DateTimeOffset absoluteExpiresAt,
         CancellationToken cancellationToken)
     {
         const string sql = """
@@ -722,7 +724,8 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
                 os,
                 browser,
                 ip_address,
-                expires_at)
+                expires_at,
+                absolute_expires_at)
             VALUES (
                 @SessionId,
                 @UserId,
@@ -731,7 +734,8 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
                 @Os,
                 @Browser,
                 CAST(@IpAddress AS inet),
-                @ExpiresAt);
+                @ExpiresAt,
+                @AbsoluteExpiresAt);
 
             INSERT INTO auth.id_session_refresh_token (
                 token_hash,
@@ -753,7 +757,8 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
             metadata.Os,
             metadata.Browser,
             IpAddress = metadata.IpAddress?.ToString(),
-            ExpiresAt = expiresAt
+            ExpiresAt = expiresAt,
+            AbsoluteExpiresAt = absoluteExpiresAt
         };
 
         var command = new CommandDefinition(sql, parameters, transaction, cancellationToken: cancellationToken);
@@ -772,6 +777,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
             WHERE refresh_token = @RefreshTokenHash
               AND revoked_at IS NULL
               AND expires_at > @Now
+              AND absolute_expires_at > @Now
             LIMIT 1;
             """;
 
@@ -797,6 +803,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
                 session.user_id AS UserId,
                 token.expires_at AS ExpiresAt,
                 session.expires_at AS SessionExpiresAt,
+                session.absolute_expires_at AS SessionAbsoluteExpiresAt,
                 session.revoked_at AS SessionRevokedAt,
                 session.revocation_reason AS SessionRevocationReason,
                 token.replaced_at AS ReplacedAt,
@@ -831,6 +838,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
                   AND session_id = @SessionId
                   AND revoked_at IS NULL
                   AND expires_at > @Now
+                  AND absolute_expires_at > @Now
             );
             """;
 
@@ -855,6 +863,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
               AND session_id = @SessionId
               AND revoked_at IS NULL
               AND expires_at > @Now
+              AND absolute_expires_at > @Now
             LIMIT 1;
             """;
 
@@ -896,10 +905,11 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
 
             UPDATE auth.id_session
             SET refresh_token = @RefreshTokenHash,
-                expires_at = @ExpiresAt,
+                expires_at = LEAST(@ExpiresAt, absolute_expires_at),
                 last_seen_at = now()
             WHERE session_id = @SessionId
-              AND revoked_at IS NULL;
+              AND revoked_at IS NULL
+              AND absolute_expires_at > now();
 
             INSERT INTO auth.id_session_refresh_token (
                 token_hash,
@@ -1051,6 +1061,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
             WHERE user_id = @UserId
               AND revoked_at IS NULL
               AND expires_at > @Now
+              AND absolute_expires_at > @Now
             ORDER BY created_at DESC;
             """;
 
@@ -1094,6 +1105,7 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
             browser AS Browser,
             ip_address AS IpAddress,
             expires_at AS ExpiresAt,
+            absolute_expires_at AS AbsoluteExpiresAt,
             created_at AS CreatedAt,
             last_seen_at AS LastSeenAt,
             revocation_reason AS RevocationReason,

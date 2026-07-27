@@ -35,10 +35,12 @@ CREATE TABLE id_session (
                             browser          text,          -- VD: 'Safari'
                             ip_address       inet,
                             expires_at       timestamptz NOT NULL,
+                            absolute_expires_at timestamptz NOT NULL,
                             created_at       timestamptz NOT NULL DEFAULT now(),
                             last_seen_at     timestamptz NOT NULL DEFAULT now(),
                             revocation_reason text,
-                            revoked_at       timestamptz
+                            revoked_at       timestamptz,
+                            CONSTRAINT ck_id_session_absolute_expiry CHECK (absolute_expires_at >= created_at)
 );
 
 CREATE TABLE id_session_refresh_token (

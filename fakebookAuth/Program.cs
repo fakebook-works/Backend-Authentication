@@ -1,5 +1,6 @@
 using Dapper;
 using Npgsql;
+using System.Text;
 
 namespace fakebookAuth;
 
@@ -10,6 +11,7 @@ public static class Program
         DefaultTypeMap.MatchNamesWithUnderscores = true;
 
         var builder = WebApplication.CreateBuilder(args);
+        builder.Services.AddFakebookServiceDefaults(builder.Configuration, "fakebook-authentication");
 
         builder.Services.AddInternalRequestSigning(
             builder.Configuration,
@@ -31,8 +33,12 @@ public static class Program
         builder.Services
             .AddOptions<JwtOptions>()
             .Bind(builder.Configuration.GetSection(JwtOptions.SectionName))
-            .Validate(options => !string.IsNullOrWhiteSpace(options.SigningKey), "Jwt:SigningKey is required.")
-            .Validate(options => options.SigningKeyBytes >= 32, "Jwt:SigningKey must be at least 32 bytes.")
+            .Validate(options => JwtKeyMaterial.IsValidPrivateKey(options.PrivateKeyBase64),
+                "Jwt:PrivateKeyBase64 must be a valid PKCS#8 RSA key of at least 2048 bits.")
+            .Validate(options => JwtKeyMaterial.IsValidKeyId(options.KeyId),
+                "Jwt:KeyId must contain 1-64 safe identifier characters.")
+            .Validate(options => string.IsNullOrEmpty(options.LegacySigningKey) || Encoding.UTF8.GetByteCount(options.LegacySigningKey) >= 32,
+                "Jwt:LegacySigningKey must be empty or at least 32 bytes.")
             .Validate(options => options.AccessTokenMinutes > 0, "Jwt:AccessTokenMinutes must be greater than zero.")
             .ValidateOnStart();
 
@@ -40,6 +46,9 @@ public static class Program
             .AddOptions<AuthOptions>()
             .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))
             .Validate(options => options.RefreshTokenDays > 0, "Auth:RefreshTokenDays must be greater than zero.")
+            .Validate(
+                options => options.AbsoluteSessionDays >= options.RefreshTokenDays && options.AbsoluteSessionDays <= 3_650,
+                "Auth:AbsoluteSessionDays must be at least RefreshTokenDays and at most 3650 days.")
             .Validate(options => options.EmailVerificationMinutes > 0, "Auth:EmailVerificationMinutes must be greater than zero.")
             .Validate(options => options.PasswordResetMinutes > 0, "Auth:PasswordResetMinutes must be greater than zero.")
             .Validate(options => options.OtpCooldownSeconds >= 0, "Auth:OtpCooldownSeconds must be greater than or equal to zero.")
@@ -147,18 +156,18 @@ public static class Program
             ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor,
             ForwardLimit = 1
         };
-        forwardedHeaders.KnownNetworks.Clear();
+        forwardedHeaders.KnownIPNetworks.Clear();
         forwardedHeaders.KnownProxies.Clear();
         foreach (var network in new[]
                  {
-                     new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("127.0.0.0"), 8),
-                     new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("10.0.0.0"), 8),
-                     new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("172.16.0.0"), 12),
-                     new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("192.168.0.0"), 16),
-                     new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.IPv6Loopback, 128)
+                     new System.Net.IPNetwork(System.Net.IPAddress.Parse("127.0.0.0"), 8),
+                     new System.Net.IPNetwork(System.Net.IPAddress.Parse("10.0.0.0"), 8),
+                     new System.Net.IPNetwork(System.Net.IPAddress.Parse("172.16.0.0"), 12),
+                     new System.Net.IPNetwork(System.Net.IPAddress.Parse("192.168.0.0"), 16),
+                     new System.Net.IPNetwork(System.Net.IPAddress.IPv6Loopback, 128)
                  })
         {
-            forwardedHeaders.KnownNetworks.Add(network);
+            forwardedHeaders.KnownIPNetworks.Add(network);
         }
         app.UseForwardedHeaders(forwardedHeaders);
 

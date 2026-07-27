@@ -36,6 +36,7 @@ public sealed class UserSession
     public string? Browser { get; set; }
     public IPAddress? IpAddress { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset AbsoluteExpiresAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? LastSeenAt { get; set; }
     public string? RevocationReason { get; set; }
@@ -63,6 +64,7 @@ public sealed class ReplacedRefreshToken
     public long UserId { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset SessionExpiresAt { get; set; }
+    public DateTimeOffset SessionAbsoluteExpiresAt { get; set; }
     public DateTimeOffset? SessionRevokedAt { get; set; }
     public string? SessionRevocationReason { get; set; }
     public DateTimeOffset? ReplacedAt { get; set; }

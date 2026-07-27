@@ -109,10 +109,66 @@ public interface ITokenService
 
 public sealed record AccessTokenPrincipal(long UserId, long? SessionId);
 
-public sealed class TokenService(IOptions<JwtOptions> options) : ITokenService
+public static class JwtKeyMaterial
+{
+    public static RSA ImportPrivateKey(string value)
+    {
+        var rsa = RSA.Create();
+        try
+        {
+            rsa.ImportPkcs8PrivateKey(Convert.FromBase64String(value), out var bytesRead);
+            if (bytesRead == 0 || rsa.KeySize < 2048)
+            {
+                throw new CryptographicException("RSA private key is too small.");
+            }
+
+            return rsa;
+        }
+        catch
+        {
+            rsa.Dispose();
+            throw;
+        }
+    }
+
+    public static bool IsValidPrivateKey(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        try
+        {
+            using var rsa = ImportPrivateKey(value);
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
+    }
+
+    public static bool IsValidKeyId(string value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Length <= 64 &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.');
+}
+
+public sealed class TokenService : ITokenService, IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly JwtOptions _options = options.Value;
+    private readonly JwtOptions _options;
+    private readonly RSA _privateKey;
+    private readonly RSA _publicKey;
+
+    public TokenService(IOptions<JwtOptions> options)
+    {
+        _options = options.Value;
+        _privateKey = JwtKeyMaterial.ImportPrivateKey(_options.PrivateKeyBase64);
+        _publicKey = RSA.Create();
+        _publicKey.ImportParameters(_privateKey.ExportParameters(includePrivateParameters: false));
+    }
 
     public string CreateAccessToken(IdentityUser user, long? sessionId = null)
     {
@@ -121,8 +177,9 @@ public sealed class TokenService(IOptions<JwtOptions> options) : ITokenService
 
         var header = new Dictionary<string, object?>
         {
-            ["alg"] = "HS256",
-            ["typ"] = "JWT"
+            ["alg"] = "RS256",
+            ["typ"] = "JWT",
+            ["kid"] = _options.KeyId
         };
 
         var payload = new Dictionary<string, object?>
@@ -143,7 +200,10 @@ public sealed class TokenService(IOptions<JwtOptions> options) : ITokenService
         }
 
         var unsignedToken = $"{EncodeJson(header)}.{EncodeJson(payload)}";
-        var signature = Sign(unsignedToken, _options.SigningKey);
+        var signature = WebEncoders.Base64UrlEncode(_privateKey.SignData(
+            Encoding.ASCII.GetBytes(unsignedToken),
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1));
 
         return $"{unsignedToken}.{signature}";
     }
@@ -166,20 +226,30 @@ public sealed class TokenService(IOptions<JwtOptions> options) : ITokenService
                 return false;
             }
 
-            var unsignedToken = $"{parts[0]}.{parts[1]}";
-            var expectedSignature = Sign(unsignedToken, _options.SigningKey);
-            var expectedBytes = Encoding.ASCII.GetBytes(expectedSignature);
-            var actualBytes = Encoding.ASCII.GetBytes(parts[2]);
-
-            if (expectedBytes.Length != actualBytes.Length ||
-                !CryptographicOperations.FixedTimeEquals(expectedBytes, actualBytes))
+            using var header = JsonDocument.Parse(WebEncoders.Base64UrlDecode(parts[0]));
+            if (!header.RootElement.TryGetProperty("alg", out var alg))
             {
                 return false;
             }
 
-            using var header = JsonDocument.Parse(WebEncoders.Base64UrlDecode(parts[0]));
-            if (!header.RootElement.TryGetProperty("alg", out var alg) ||
-                alg.GetString() != "HS256")
+            var unsignedToken = $"{parts[0]}.{parts[1]}";
+            var signature = WebEncoders.Base64UrlDecode(parts[2]);
+            var algorithm = alg.GetString();
+            var signatureIsValid = algorithm switch
+            {
+                "RS256" =>
+                    header.RootElement.TryGetProperty("kid", out var keyId) &&
+                    keyId.GetString() == _options.KeyId &&
+                    _publicKey.VerifyData(
+                        Encoding.ASCII.GetBytes(unsignedToken),
+                        signature,
+                        HashAlgorithmName.SHA256,
+                        RSASignaturePadding.Pkcs1),
+                "HS256" when !string.IsNullOrEmpty(_options.LegacySigningKey) =>
+                    VerifyLegacySignature(unsignedToken, signature, _options.LegacySigningKey),
+                _ => false
+            };
+            if (!signatureIsValid)
             {
                 return false;
             }
@@ -236,11 +306,19 @@ public sealed class TokenService(IOptions<JwtOptions> options) : ITokenService
         return WebEncoders.Base64UrlEncode(json);
     }
 
-    private static string Sign(string token, string signingKey)
+    private static bool VerifyLegacySignature(string token, byte[] signature, string signingKey)
     {
-        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(signingKey));
-        var signature = hmac.ComputeHash(Encoding.ASCII.GetBytes(token));
-        return WebEncoders.Base64UrlEncode(signature);
+        var expected = HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(signingKey),
+            Encoding.ASCII.GetBytes(token));
+        return expected.Length == signature.Length &&
+               CryptographicOperations.FixedTimeEquals(expected, signature);
+    }
+
+    public void Dispose()
+    {
+        _privateKey.Dispose();
+        _publicKey.Dispose();
     }
 }
 
@@ -314,6 +392,18 @@ public static class TokenHashing
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+}
+
+public static class SessionLifetime
+{
+    public static DateTimeOffset CapRefreshExpiry(
+        DateTimeOffset now,
+        int refreshTokenDays,
+        DateTimeOffset absoluteExpiresAt)
+    {
+        var slidingExpiry = now.AddDays(refreshTokenDays);
+        return slidingExpiry < absoluteExpiresAt ? slidingExpiry : absoluteExpiresAt;
     }
 }
 

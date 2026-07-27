@@ -52,7 +52,7 @@ fakebookAuth/
 
 ## Requirements
 
-- .NET SDK 8
+- .NET SDK 10
 - PostgreSQL
 - SMTP account if real email delivery is enabled
 
@@ -67,7 +67,9 @@ Important environment variables:
 
 ```text
 ConnectionStrings__DefaultConnection
-Jwt__SigningKey
+Jwt__PrivateKeyBase64
+Jwt__KeyId
+Jwt__LegacySigningKey
 Jwt__Issuer
 Jwt__Audience
 Jwt__AccessTokenMinutes
@@ -89,7 +91,10 @@ Smtp__FromEmail
 Snowflake__WorkerId
 ```
 
-`Jwt__SigningKey` is required and must be at least 32 bytes. Do not commit real JWT keys, database passwords, or SMTP passwords.
+`Jwt__PrivateKeyBase64` must contain a PKCS#8 RSA private key of at least 2048 bits.
+Only Authentication receives this private key; Gateway and Upload receive its SPKI public
+half. `Jwt__LegacySigningKey` is empty unless a bounded HS256 migration window is active.
+Do not commit real JWT keys, database passwords, or SMTP passwords.
 
 ## Database
 
@@ -122,7 +127,8 @@ Example with environment variables:
 
 ```powershell
 $env:ConnectionStrings__DefaultConnection="Host=localhost;Port=5432;Database=fakebook;Username=postgres;Password=..."
-$env:Jwt__SigningKey="at-least-32-bytes-long-signing-key"
+$env:Jwt__PrivateKeyBase64="<PKCS8-RSA-private-key-base64>"
+$env:Jwt__KeyId="fakebook-rs256-<fingerprint>"
 $env:Smtp__Enabled="false"
 dotnet run --project .\fakebookAuth\fakebookAuth.csproj
 ```
@@ -155,7 +161,8 @@ Run:
 ```powershell
 docker run --rm -p 5000:8080 `
   -e ConnectionStrings__DefaultConnection="Host=host.docker.internal;Port=5432;Database=fakebook;Username=postgres;Password=..." `
-  -e Jwt__SigningKey="at-least-32-bytes-long-signing-key" `
+  -e Jwt__PrivateKeyBase64="<PKCS8-RSA-private-key-base64>" `
+  -e Jwt__KeyId="fakebook-rs256-<fingerprint>" `
   -e Smtp__Enabled="false" `
   fakebook-auth
 ```
