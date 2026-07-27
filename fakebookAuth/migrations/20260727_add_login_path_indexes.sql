@@ -22,7 +22,13 @@
 --
 -- HOW TO APPLY
 --
---   psql "$CONNECTION" -v ON_ERROR_STOP=1 -f 20260727_add_login_path_indexes.sql
+--   .\scripts\stop-local.ps1
+--   .\scriptspply-migrations.ps1 -WritersStopped -File `
+--       .\AuthenticationService\Backend-AuthenticationakebookAuth\migrations60727_add_login_path_indexes.sql
+--
+-- psql is not installed on every workstation, and when it is missing the command fails in
+-- a way that looks like it applied. The script above goes through Fakebook.Maintenance,
+-- which already carries the database client this repository depends on.
 --
 -- Wrapped in a transaction and idempotent, matching the other migrations here. See
 -- SocialGraph's 20260727_add_hot_path_indexes.sql for the CONCURRENTLY variant to use if
