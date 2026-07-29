@@ -238,6 +238,23 @@ X-Internal-AuthenticationService-Secret: <Gateway__InternalSharedSecret>
 The identity is tombstoned instead of physically removed, all active sessions are
 revoked, and the email remains reserved so a deleted canonical ID cannot be reused.
 
+SocialGraph can resolve the contact email shown on an authenticated, visible profile
+through the minimal internal endpoint:
+
+```http
+GET /internal/users/{userId}/contact
+X-Internal-AuthenticationService-Secret: <Authentication target secret>
+X-Internal-Timestamp: <unix timestamp>
+X-Internal-Nonce: <single-use nonce>
+X-Internal-Signature: <HMAC signature>
+```
+
+It returns only `{ userId, email }`, only for an active identity. Missing, unverified,
+disabled and deleted identities return `404`. All `/internal` routes pass through the
+shared signing middleware and Redis nonce store; invalid signatures, stale timestamps,
+replay, or unavailable nonce storage fail closed. This endpoint is never called by the
+browser and never returns credentials, password hashes, OTPs, tokens or session data.
+
 ## Gateway Integration
 
 The Gateway should set and clear browser cookies. This subgraph returns a `refreshTokenCookie` instruction from login, refresh, logout, logoutAll, and current-session logout flows.
