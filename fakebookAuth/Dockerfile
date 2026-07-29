@@ -1,6 +1,7 @@
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS base
 USER $APP_UID
 WORKDIR /app
+ENV ASPNETCORE_HTTP_PORTS=1001
 EXPOSE 1001
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
