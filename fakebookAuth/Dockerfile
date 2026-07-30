@@ -1,4 +1,5 @@
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS base
+RUN apk add --no-cache krb5-libs
 USER $APP_UID
 WORKDIR /app
 ENV ASPNETCORE_HTTP_PORTS=1001
