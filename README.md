@@ -25,7 +25,7 @@ fakebookAuth/
   Security/             Hashing, JWT, token, OTP, Snowflake ID helpers
   Services/             Auth business logic and SMTP sender
   migrations/           Idempotent migrations for existing databases
-  schema.sql            Reference PostgreSQL schema
+  schema.sql            Immutable fresh-database baseline (`00000000_schema`)
   AGENT.md              Detailed English agent/developer guide
   AGENT_VIE.md          Detailed Vietnamese agent/developer guide
 ```
@@ -67,6 +67,10 @@ Important environment variables:
 
 ```text
 ConnectionStrings__DefaultConnection
+DatabaseMigrations__Enabled
+DatabaseMigrations__ConnectionString
+DatabaseMigrations__CommandTimeoutSeconds
+POSTGRES_MIGRATION_CONNECTION_STRING
 Jwt__PrivateKeyBase64
 Jwt__KeyId
 Jwt__LegacySigningKey
@@ -98,11 +102,35 @@ Do not commit real JWT keys, database passwords, or SMTP passwords.
 
 ## Database
 
-Create the PostgreSQL schema from:
+Database migrations run automatically before the HTTP server starts and are enabled by
+default. Production should set `DatabaseMigrations__ConnectionString` (or
+`POSTGRES_MIGRATION_CONNECTION_STRING`) to a migration-owner connection; otherwise the
+migrator explicitly falls back to the runtime connection. Set
+`DatabaseMigrations__Enabled=false` only when an external deployment step applies the
+same migrations. A migration failure fails service startup.
 
-```text
-fakebookAuth/schema.sql
-```
+The migration connection is always opened with Npgsql pooling, multiplexing, and ambient
+transaction enlistment disabled. This keeps the advisory lock bound to one physical
+PostgreSQL session and guarantees physical close releases it even if explicit unlock
+cannot complete; runtime database pooling is unchanged.
+
+The startup migrator holds a PostgreSQL session advisory lock, verifies immutable SQL
+checksums in `auth.schema_migrations`, including `schema.sql` as ledger version
+`00000000_schema`, and handles each database state deliberately:
+
+- no `auth`/`fb` schema: apply embedded `schema.sql` and baseline every included version;
+- legacy `fb`: apply/reconcile the immutable historical files in their declared order,
+  rename to `auth`, then apply current `auth` migrations;
+- existing `auth`: reconcile already-satisfied history without replaying destructive
+  `fb` migrations, then apply only missing current migrations;
+- both `fb` and `auth`: fail startup because the state is ambiguous.
+
+Before an existing final `auth` database can be reconciled to `00000000_schema`, its
+required tables, column PostgreSQL types/nullability, primary keys, unique email
+constraint, session-expiry constraint, required valid indexes, and absence of legacy
+profile columns are checked against the canonical baseline. A partial schema is rejected
+without recording the baseline. The baseline and published migration SQL are immutable;
+a checksum change on a later startup fails closed and requires a new migration version.
 
 The schema uses PostgreSQL schema `auth` and includes:
 
@@ -319,11 +347,20 @@ fakebookAuth/migrations/20260714_remove_username.sql
 fakebookAuth/migrations/20260714_remove_profile_fields.sql
 fakebookAuth/migrations/20260714_remove_phone.sql
 fakebookAuth/migrations/20260714_rename_schema_to_auth.sql
+fakebookAuth/migrations/20260727_add_absolute_session_expiry.sql
+fakebookAuth/migrations/20260727_add_login_path_indexes.sql
 ```
 
-Fresh databases should use `schema.sql`, which creates schema `auth` directly and already omits `phone`, `username`, `dob`, `display_name`, and `gender`. Existing databases must run the historical migrations against `fb` first, then run `20260714_rename_schema_to_auth.sql` last. The rename migration is idempotent, fails safely if both schema names exist, and leaves no `fb` schema behind.
+The startup migrator performs this sequence automatically. Fresh databases use
+`schema.sql`, which creates schema `auth` directly and already omits `phone`, `username`,
+`dob`, `display_name`, and `gender`; historical removal SQL is recorded as baselined and
+is never executed on that fresh schema. Existing untracked databases are reconciled by
+observable schema state before a ledger row is written. `schema.sql` itself is recorded
+and checksum-verified as immutable version `00000000_schema`.
 
-For a rolling deployment, apply the removal migrations while the old Auth version is stopped or drained, run the schema rename, then deploy the Auth version whose runtime SQL targets `auth.*`. Do not start this version before the rename migration has completed.
+For the one-time legacy `fb` transition, stop or drain old Auth instances before starting
+this version because the rename is incompatible with the old runtime SQL. Concurrent new
+instances are safe: only one migrator runs at a time under the advisory lock.
 
 ## Security Notes
 

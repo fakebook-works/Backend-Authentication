@@ -30,6 +30,16 @@ public static class Program
                 "Database connection string is required. Configure ConnectionStrings:DefaultConnection or POSTGRES_CONNECTION_STRING.");
         }
 
+        var migrationOptions = new DatabaseMigrationOptions();
+        builder.Configuration
+            .GetSection(DatabaseMigrationOptions.SectionName)
+            .Bind(migrationOptions);
+        if (migrationOptions.CommandTimeoutSeconds is < 1 or > 3_600)
+        {
+            throw new InvalidOperationException(
+                "DatabaseMigrations:CommandTimeoutSeconds must be between 1 and 3600.");
+        }
+
         builder.Services
             .AddOptions<JwtOptions>()
             .Bind(builder.Configuration.GetSection(JwtOptions.SectionName))
@@ -143,6 +153,43 @@ public static class Program
             .AddMutationType<AuthMutations>();
 
         var app = builder.Build();
+
+        var migrationLogger = app.Services
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger<AuthenticationDatabaseMigrator>();
+        if (migrationOptions.Enabled)
+        {
+            var configuredMigrationConnection = migrationOptions.ConnectionString;
+            if (string.IsNullOrWhiteSpace(configuredMigrationConnection))
+            {
+                configuredMigrationConnection = builder.Configuration.GetConnectionString("MigrationConnection");
+            }
+
+            if (string.IsNullOrWhiteSpace(configuredMigrationConnection))
+            {
+                configuredMigrationConnection = builder.Configuration["POSTGRES_MIGRATION_CONNECTION_STRING"];
+            }
+
+            var hasDedicatedMigrationConnection = !string.IsNullOrWhiteSpace(configuredMigrationConnection);
+            if (!hasDedicatedMigrationConnection)
+            {
+                configuredMigrationConnection = connectionString;
+                migrationLogger.LogWarning(
+                    "No dedicated Authentication migration connection is configured; startup migrations will use the runtime connection. Configure DatabaseMigrations:ConnectionString when the runtime role cannot execute DDL.");
+            }
+
+            new AuthenticationDatabaseMigrator(
+                    configuredMigrationConnection!,
+                    migrationOptions.CommandTimeoutSeconds,
+                    migrationLogger)
+                .MigrateAsync()
+                .GetAwaiter()
+                .GetResult();
+        }
+        else
+        {
+            migrationLogger.LogWarning("Authentication startup database migrations are disabled by configuration.");
+        }
 
         // Authentication is never reachable from outside; it only receives traffic from the
         // gateway inside the private network, which emits a single authoritative
