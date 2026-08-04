@@ -31,6 +31,8 @@ public sealed record ResetPasswordInput(string Identifier, string Otp, string Ne
 
 public sealed record ChangePasswordInput(string CurrentPassword, string NewPassword);
 
+public sealed record ChangeEmailInput(string CurrentPassword, string NewEmail);
+
 public sealed record GatewaySessionValidationInput(long UserId, long SessionId);
 
 public sealed record GatewaySessionValidationPayload(

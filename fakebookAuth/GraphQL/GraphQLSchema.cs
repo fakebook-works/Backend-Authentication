@@ -102,6 +102,12 @@ public sealed class AuthMutations
         CancellationToken cancellationToken) =>
         authService.ChangePasswordAsync(input, cancellationToken);
 
+    public Task<AuthActionPayload> ChangeEmail(
+        ChangeEmailInput input,
+        [Service] IAuthService authService,
+        CancellationToken cancellationToken) =>
+        authService.ChangeEmailAsync(input, cancellationToken);
+
     public Task<PaymentPremiumState> SetPaymentValidDate(
         SetPaymentValidDateInput input,
         [Service] IPaymentPremiumService paymentPremiumService,

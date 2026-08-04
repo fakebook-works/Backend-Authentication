@@ -41,6 +41,13 @@ public interface IUserRepository
         long userId,
         CancellationToken cancellationToken);
 
+    Task UpdateEmailAndMarkUnverifiedAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        long userId,
+        string email,
+        CancellationToken cancellationToken);
+
     Task MarkDeletedAsync(
         DbConnection connection,
         DbTransaction transaction,
@@ -165,6 +172,39 @@ public sealed class UserRepository(NpgsqlDataSource dataSource) : IUserRepositor
             cancellationToken: cancellationToken);
 
         await connection.ExecuteAsync(command);
+    }
+
+    public async Task UpdateEmailAndMarkUnverifiedAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        long userId,
+        string email,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE auth.id_user
+            SET email = @Email,
+                status = @Status,
+                updated_at = now()
+            WHERE user_id = @UserId
+              AND status = @ActiveStatus;
+            """;
+
+        var changed = await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                UserId = userId,
+                Email = email,
+                Status = AuthConstants.StatusUnverified,
+                ActiveStatus = AuthConstants.StatusActive
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (changed != 1)
+        {
+            throw new InvalidOperationException("The active identity could not be updated.");
+        }
     }
 
     public async Task MarkDeletedAsync(

@@ -22,6 +22,7 @@ public interface IAuthService
     Task<AuthActionPayload> RequestPasswordResetAsync(RequestPasswordResetInput input, CancellationToken cancellationToken);
     Task<AuthActionPayload> ResetPasswordAsync(ResetPasswordInput input, CancellationToken cancellationToken);
     Task<AuthActionPayload> ChangePasswordAsync(ChangePasswordInput input, CancellationToken cancellationToken);
+    Task<AuthActionPayload> ChangeEmailAsync(ChangeEmailInput input, CancellationToken cancellationToken);
     Task<UserType> MeAsync(CancellationToken cancellationToken);
     Task<GatewaySessionValidationPayload> ValidateGatewaySessionAsync(
         GatewaySessionValidationInput input,
@@ -1190,6 +1191,112 @@ public sealed class AuthService(
         }
     }
 
+    public async Task<AuthActionPayload> ChangeEmailAsync(
+        ChangeEmailInput input,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(input.CurrentPassword))
+        {
+            throw InvalidCredentials();
+        }
+
+        var newEmail = NormalizeAndValidateEmail(input.NewEmail);
+        var (user, _) = await GetCurrentUserAsync(cancellationToken);
+        if (string.Equals(user.Email, newEmail, StringComparison.OrdinalIgnoreCase))
+        {
+            throw GraphQlError("New email must be different from the current email.", "EMAIL_UNCHANGED");
+        }
+
+        var credential = await credentials.FindPasswordCredentialAsync(user.UserId, cancellationToken);
+        if (credential?.SecretHash is null ||
+            !await VerifyPasswordAsync(input.CurrentPassword, credential.SecretHash, cancellationToken))
+        {
+            throw InvalidCredentials();
+        }
+
+        var otp = OtpGenerator.SixDigitCode();
+        var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            if (await users.EmailExistsAsync(connection, transaction, newEmail, cancellationToken))
+            {
+                throw GraphQlError("Email already exists.", "IDENTIFIER_EXISTS");
+            }
+
+            await users.UpdateEmailAndMarkUnverifiedAsync(
+                connection,
+                transaction,
+                user.UserId,
+                newEmail,
+                cancellationToken);
+            await verifications.MarkUnusedByUserAndTypeAsUsedAsync(
+                connection,
+                transaction,
+                user.UserId,
+                AuthConstants.EmailVerificationType,
+                cancellationToken);
+            await verifications.InsertEmailVerificationAsync(
+                connection,
+                transaction,
+                ids.NewId(),
+                user.UserId,
+                TokenHashing.Sha256Hex(otp),
+                DateTimeOffset.UtcNow.AddMinutes(_authOptions.EmailVerificationMinutes),
+                cancellationToken);
+            await sessions.RevokeAllByUserIdAsync(
+                connection,
+                transaction,
+                user.UserId,
+                "EMAIL_CHANGED",
+                cancellationToken);
+            await auditLogs.InsertAsync(
+                connection,
+                transaction,
+                ids.NewId(),
+                user.UserId,
+                "EMAIL_CHANGED",
+                metadata,
+                new { VerificationRequired = true },
+                cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (GraphQLException)
+        {
+            await RollbackQuietlyAsync(transaction, cancellationToken);
+            throw;
+        }
+        catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.UniqueViolation)
+        {
+            await RollbackQuietlyAsync(transaction, cancellationToken);
+            throw GraphQlError("Email already exists.", "IDENTIFIER_EXISTS");
+        }
+        catch
+        {
+            await RollbackQuietlyAsync(transaction, cancellationToken);
+            throw;
+        }
+
+        if (_smtpOptions.Enabled)
+        {
+            await SendQuietlyAsync(
+                () => emailSender.SendVerificationOtpAsync(newEmail, otp, cancellationToken),
+                "email change verification",
+                user.UserId);
+        }
+
+        logger.LogInformation("Email changed and sessions revoked for user {UserId}.", user.UserId);
+        return new AuthActionPayload(
+            true,
+            _smtpOptions.Enabled
+                ? "Email changed. Verify the new address before signing in again."
+                : "Email changed. Email delivery is disabled; verify manually before signing in again.",
+            CreateClearRefreshTokenCookie());
+    }
+
     public async Task<UserType> MeAsync(CancellationToken cancellationToken)
     {
         var (user, _) = await GetCurrentUserAsync(cancellationToken);
@@ -1259,17 +1366,24 @@ public sealed class AuthService(
 
     private static NormalizedRegisterInput NormalizeAndValidate(string emailValue, string password)
     {
-        var email = NormalizeEmail(emailValue);
-        if (!new EmailAddressAttribute().IsValid(email))
-        {
-            throw GraphQlError("Email is invalid.", "INVALID_EMAIL");
-        }
+        var email = NormalizeAndValidateEmail(emailValue);
 
         ValidatePassword(password);
         return new NormalizedRegisterInput(email, password);
     }
 
     private static string NormalizeEmail(string value) => value.Trim().ToLowerInvariant();
+
+    private static string NormalizeAndValidateEmail(string value)
+    {
+        var email = NormalizeEmail(value);
+        if (email.Length is 0 or > MaxIdentifierLength || !new EmailAddressAttribute().IsValid(email))
+        {
+            throw GraphQlError("Email is invalid.", "INVALID_EMAIL");
+        }
+
+        return email;
+    }
 
     /// <summary>
     /// Maximum length of an email address per RFC 5321. Identifiers arriving on unauthenticated

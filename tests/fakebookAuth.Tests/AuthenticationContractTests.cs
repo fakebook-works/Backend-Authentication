@@ -42,6 +42,11 @@ public sealed class AuthenticationContractTests
 
         var paymentInput = ExtractBlock(schema, "input SetPaymentValidDateInput");
         Assert.Contains("validDate: DateTime!", paymentInput, StringComparison.Ordinal);
+
+        var changeEmailInput = ExtractBlock(schema, "input ChangeEmailInput");
+        Assert.Contains("currentPassword: String!", changeEmailInput, StringComparison.Ordinal);
+        Assert.Contains("newEmail: String!", changeEmailInput, StringComparison.Ordinal);
+        Assert.DoesNotContain("userId", changeEmailInput, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -87,6 +92,19 @@ public sealed class AuthenticationContractTests
         var exception = await Assert.ThrowsAsync<GraphQLException>(() =>
             service.CreateUserIdentityAsync(
                 new CreateUserIdentityInput(123, "not-an-email", "Password123!"),
+                CancellationToken.None));
+
+        Assert.Equal("INVALID_EMAIL", exception.Errors[0].Code);
+    }
+
+    [Fact]
+    public async Task ChangeEmail_RejectsInvalidEmailBeforeReadingTheCurrentIdentity()
+    {
+        var service = CreateValidationOnlyAuthService();
+
+        var exception = await Assert.ThrowsAsync<GraphQLException>(
+            () => service.ChangeEmailAsync(
+                new ChangeEmailInput("CurrentPassword123!", "not-an-email"),
                 CancellationToken.None));
 
         Assert.Equal("INVALID_EMAIL", exception.Errors[0].Code);
@@ -470,6 +488,13 @@ public sealed class AuthenticationContractTests
             DbConnection connection,
             DbTransaction transaction,
             long userId,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task UpdateEmailAndMarkUnverifiedAsync(
+            DbConnection connection,
+            DbTransaction transaction,
+            long userId,
+            string email,
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task MarkDeletedAsync(

@@ -221,7 +221,14 @@ logoutSession(input: LogoutSessionInput!): AuthActionPayload!
 requestPasswordReset(input: RequestPasswordResetInput!): AuthActionPayload!
 resetPassword(input: ResetPasswordInput!): AuthActionPayload!
 changePassword(input: ChangePasswordInput!): AuthActionPayload!
+changeEmail(input: ChangeEmailInput!): AuthActionPayload!
 ```
+
+`changeEmail` is authenticated and requires the current password. It normalizes and
+uniqueness-checks the new address, marks the identity unverified, invalidates prior email OTPs,
+creates a new verification OTP, revokes every session and clears the refresh cookie. The caller
+must verify the new address before signing in again; an email value is never trusted merely
+because it came from an already-authenticated browser session.
 
 `register` is available for direct Authentication testing and backward compatibility, but the Gateway marks it `@internal`. It accepts only `email` and `password`. Normal frontend registration must call SocialGraph `createUser` so the canonical user ID and profile are created before Auth credentials.
 
