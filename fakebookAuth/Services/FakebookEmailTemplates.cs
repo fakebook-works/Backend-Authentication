@@ -72,7 +72,7 @@ public static class FakebookEmailTemplates
 
             {ignoreMessage}
 
-            Fakebook Security
+            Fakebook
             """;
 
         var htmlBody = BuildHtmlBody(
@@ -196,7 +196,7 @@ public static class FakebookEmailTemplates
                       </tr>
                       <tr>
                         <td align="center" style="padding:20px 20px 0; color:#65676b; font-size:12px; line-height:19px;">
-                          Sent by Fakebook Security<br>
+                          Sent by Fakebook<br>
                           <span style="color:#65676b;">Connect with the people and things you love.</span>
                         </td>
                       </tr>
