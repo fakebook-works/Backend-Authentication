@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Mail;
+using System.Net.Mime;
+using System.Text;
 using Microsoft.Extensions.Options;
 
 namespace fakebookAuth;
@@ -17,19 +19,25 @@ public interface IEmailSender
         CancellationToken cancellationToken);
 }
 
-public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSender
+public sealed class SmtpEmailSender(
+    IOptions<SmtpOptions> options,
+    IOptions<AuthOptions> authOptions) : IEmailSender
 {
     private readonly SmtpOptions _options = options.Value;
+    private readonly AuthOptions _authOptions = authOptions.Value;
 
     public async Task SendVerificationOtpAsync(
         string email,
         string otp,
         CancellationToken cancellationToken)
     {
+        var content = FakebookEmailTemplates.Verification(
+            otp,
+            _authOptions.EmailVerificationMinutes);
+
         await SendOtpAsync(
             email,
-            "Verify your Fakebook account",
-            BuildVerificationBody(otp),
+            content,
             cancellationToken);
     }
 
@@ -38,17 +46,19 @@ public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSende
         string otp,
         CancellationToken cancellationToken)
     {
+        var content = FakebookEmailTemplates.PasswordReset(
+            otp,
+            _authOptions.PasswordResetMinutes);
+
         await SendOtpAsync(
             email,
-            "Reset your Fakebook password",
-            BuildPasswordResetBody(otp),
+            content,
             cancellationToken);
     }
 
     private async Task SendOtpAsync(
         string email,
-        string subject,
-        string body,
+        OtpEmailContent content,
         CancellationToken cancellationToken)
     {
         if (!_options.Enabled)
@@ -58,15 +68,7 @@ public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSende
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        using var message = new MailMessage
-        {
-            From = new MailAddress(_options.FromEmail, _options.FromName),
-            Subject = subject,
-            Body = body,
-            IsBodyHtml = false
-        };
-
-        message.To.Add(new MailAddress(email));
+        using var message = CreateMailMessage(_options, email, content);
 
         using var client = new SmtpClient(_options.Host, _options.Port)
         {
@@ -78,29 +80,36 @@ public sealed class SmtpEmailSender(IOptions<SmtpOptions> options) : IEmailSende
         await client.SendMailAsync(message, cancellationToken);
     }
 
-    private static string BuildVerificationBody(string otp) =>
-        $"""
-        Hello,
+    internal static MailMessage CreateMailMessage(
+        SmtpOptions options,
+        string email,
+        OtpEmailContent content)
+    {
+        var message = new MailMessage
+        {
+            From = new MailAddress(options.FromEmail, options.FromName),
+            Subject = content.Subject,
+            SubjectEncoding = Encoding.UTF8,
+            Body = content.PlainTextBody,
+            BodyEncoding = Encoding.UTF8,
+            IsBodyHtml = false
+        };
 
-        Your Fakebook verification code is:
+        try
+        {
+            message.To.Add(new MailAddress(email));
+            message.AlternateViews.Add(
+                AlternateView.CreateAlternateViewFromString(
+                    content.HtmlBody,
+                    Encoding.UTF8,
+                    MediaTypeNames.Text.Html));
 
-        {otp}
-
-        This code expires in 15 minutes. If you did not create a Fakebook account, you can ignore this email.
-
-        Fakebook
-        """;
-
-    private static string BuildPasswordResetBody(string otp) =>
-        $"""
-        Hello,
-
-        Your Fakebook password reset code is:
-
-        {otp}
-
-        This code expires in 15 minutes. If you did not request a password reset, you can ignore this email.
-
-        Fakebook
-        """;
+            return message;
+        }
+        catch
+        {
+            message.Dispose();
+            throw;
+        }
+    }
 }
