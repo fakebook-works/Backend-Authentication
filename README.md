@@ -6,7 +6,7 @@ It is designed to run behind a GraphQL Federation Gateway. The Gateway should be
 
 ## Tech Stack
 
-- .NET 8 ASP.NET Core
+- .NET 10 ASP.NET Core
 - HotChocolate GraphQL
 - PostgreSQL
 - Dapper + Npgsql
