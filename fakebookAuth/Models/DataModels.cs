@@ -90,7 +90,12 @@ public sealed record ClientMetadata(
 {
     public static ClientMetadata From(HttpContext? httpContext)
     {
-        var userAgent = httpContext?.Request.Headers.UserAgent.ToString();
+        // User-Agent is attacker-controlled metadata.  Keep only a short printable
+        // projection before classification, persistence or logging; otherwise a large
+        // Zalgo/control sequence can be carried into audit rows and later rendered by
+        // session-history clients.
+        var userAgent = AuthInputValidation.SanitizeUserAgent(
+            httpContext?.Request.Headers.UserAgent.ToString());
         var ipAddress = httpContext?.Connection.RemoteIpAddress;
 
         return new ClientMetadata(

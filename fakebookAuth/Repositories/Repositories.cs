@@ -1102,7 +1102,8 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
               AND revoked_at IS NULL
               AND expires_at > @Now
               AND absolute_expires_at > @Now
-            ORDER BY created_at DESC;
+            ORDER BY created_at DESC
+            LIMIT 100;
             """;
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
@@ -1122,7 +1123,8 @@ public sealed class SessionRepository(NpgsqlDataSource dataSource) : ISessionRep
         const string sql = $"""
             {SelectSessionSql}
             WHERE user_id = @UserId
-            ORDER BY created_at DESC;
+            ORDER BY created_at DESC
+            LIMIT 500;
             """;
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);

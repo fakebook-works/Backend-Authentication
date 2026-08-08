@@ -11,6 +11,11 @@ public static class Program
         DefaultTypeMap.MatchNamesWithUnderscores = true;
 
         var builder = WebApplication.CreateBuilder(args);
+        // Authentication GraphQL/internal requests carry credentials and small control
+        // messages only.  Bound the body at the server edge so malformed JSON or a giant
+        // GraphQL document cannot consume memory before resolver validation runs.
+        builder.WebHost.ConfigureKestrel(options =>
+            options.Limits.MaxRequestBodySize = 1 * 1024 * 1024);
         builder.Services.AddFakebookServiceDefaults(builder.Configuration, "fakebook-authentication");
 
         builder.Services.AddInternalRequestSigning(
@@ -148,7 +153,24 @@ public static class Program
 
         builder.Services
             .AddGraphQLServer("Authentication")
-            .ModifyRequestOptions(options => options.IncludeExceptionDetails = builder.Environment.IsDevelopment())
+            .AddMaxExecutionDepthRule(
+                maxAllowedExecutionDepth: 12,
+                skipIntrospectionFields: true,
+                allowRequestOverrides: false)
+            .SetMaxAllowedValidationErrors(5)
+            .ModifyParserOptions(options =>
+            {
+                options.MaxAllowedFields = 256;
+                options.MaxAllowedNodes = 2_048;
+                options.MaxAllowedTokens = 4_096;
+                options.MaxAllowedDirectives = 8;
+                options.MaxAllowedRecursionDepth = 100;
+            })
+            .ModifyRequestOptions(options =>
+            {
+                options.ExecutionTimeout = TimeSpan.FromSeconds(20);
+                options.IncludeExceptionDetails = builder.Environment.IsDevelopment();
+            })
             .AddQueryType<Query>()
             .AddMutationType<AuthMutations>();
 
@@ -221,10 +243,13 @@ public static class Program
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("RequestCorrelation");
         app.Use(async (context, next) =>
         {
-            var correlationId = context.Request.Headers.TryGetValue("X-Correlation-ID", out var header) &&
-                                !string.IsNullOrWhiteSpace(header.ToString())
-                ? header.ToString()
-                : Guid.NewGuid().ToString("N");
+            var correlationId = Guid.NewGuid().ToString("N");
+            var correlationValues = context.Request.Headers["X-Correlation-ID"];
+            if (correlationValues.Count == 1 &&
+                AuthInputValidation.TryNormalizeCorrelationId(correlationValues[0], out var suppliedCorrelationId))
+            {
+                correlationId = suppliedCorrelationId;
+            }
 
             context.Items["CorrelationId"] = correlationId;
             context.Response.Headers["X-Correlation-ID"] = correlationId;

@@ -20,19 +20,25 @@ public sealed class InternalUsersController(IAuthService authService, IUserRepos
         var user = await userRepository.FindByIdAsync(userId, cancellationToken);
         if (user is null ||
             user.Status != AuthConstants.StatusActive ||
-            string.IsNullOrWhiteSpace(user.Email))
+            !AuthInputValidation.TryNormalizeEmail(user.Email, out var email))
         {
             return NotFound();
         }
 
-        return Ok(new InternalUserContactResult(user.UserId, user.Email));
+        return Ok(new InternalUserContactResult(user.UserId, email));
     }
 
     [HttpPost]
+    [Consumes("application/json")]
     public async Task<ActionResult<AuthActionPayload>> CreateUserIdentityAsync(
-        [FromBody] CreateUserIdentityInput input,
+        [FromBody] CreateUserIdentityInput? input,
         CancellationToken cancellationToken)
     {
+        if (input is null)
+        {
+            return BadRequest(new AuthActionPayload(false, "User identity input is required."));
+        }
+
         try
         {
             var result = await authService.CreateUserIdentityAsync(input, cancellationToken);

@@ -1,4 +1,3 @@
-using System.ComponentModel.DataAnnotations;
 using System.Text;
 using System.Text.Json;
 using Npgsql;
@@ -282,7 +281,13 @@ public sealed class AuthService(
 
     public async Task<VerifyEmailPayload> VerifyEmailAsync(VerifyEmailInput input, CancellationToken cancellationToken)
     {
-        var identifier = NormalizeEmail(input.Identifier);
+        if (!AuthInputValidation.TryNormalizeEmail(input.Identifier, out var identifier))
+        {
+            // Keep the same account-independent response used for a well-formed address
+            // with a wrong code.  Validation must not become an account enumeration oracle.
+            throw GraphQlError("Verification code is invalid or expired.", "INVALID_OR_EXPIRED_VERIFICATION_CODE");
+        }
+
         var otp = NormalizeOtp(input.Otp);
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
 
@@ -379,13 +384,13 @@ public sealed class AuthService(
         // caller grow that table without limit, and anything past the btree page limit made the
         // insert throw a server error instead of failing the login.
         var identifier = NormalizeIdentifier(input.Identifier);
-        if (string.IsNullOrWhiteSpace(identifier) ||
+        if (identifier.Length == 0 ||
             string.IsNullOrWhiteSpace(input.Password) ||
-            identifier.Any(char.IsWhiteSpace) ||
-            !new EmailAddressAttribute().IsValid(identifier))
+            // Short passwords still flow through the normal login failure/rate-limit path;
+            // only empty, malformed-UTF8 or oversized values are rejected before lookup so
+            // an attacker cannot bypass the per-identifier throttle with cheap short tries.
+            !AuthInputValidation.IsPasswordWithinBounds(input.Password, requireMinimumLength: false))
         {
-            // EmailAddressAttribute is deliberately lenient and accepts embedded whitespace,
-            // so that is rejected explicitly rather than being written to the audit log.
             throw InvalidCredentials();
         }
 
@@ -827,6 +832,11 @@ public sealed class AuthService(
         CancellationToken cancellationToken)
     {
         var identifier = NormalizeIdentifier(input.Identifier);
+        if (identifier.Length == 0)
+        {
+            return new AuthActionPayload(true, VerificationCodeSentMessage);
+        }
+
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
@@ -916,6 +926,11 @@ public sealed class AuthService(
         CancellationToken cancellationToken)
     {
         var identifier = NormalizeIdentifier(input.Identifier);
+        if (identifier.Length == 0)
+        {
+            return new AuthActionPayload(true, PasswordResetSentMessage);
+        }
+
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
         IdentityUser? userToEmail = null;
         string? otpToEmail = null;
@@ -1009,7 +1024,11 @@ public sealed class AuthService(
         ResetPasswordInput input,
         CancellationToken cancellationToken)
     {
-        var identifier = NormalizeEmail(input.Identifier);
+        if (!AuthInputValidation.TryNormalizeEmail(input.Identifier, out var identifier))
+        {
+            throw GraphQlError("Password reset code is invalid or expired.", "INVALID_OR_EXPIRED_PASSWORD_RESET_CODE");
+        }
+
         var otp = NormalizeOtp(input.Otp);
         ValidatePassword(input.NewPassword);
         var metadata = ClientMetadata.From(httpContextAccessor.HttpContext);
@@ -1127,7 +1146,8 @@ public sealed class AuthService(
         ChangePasswordInput input,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(input.CurrentPassword))
+        if (string.IsNullOrWhiteSpace(input.CurrentPassword) ||
+            !AuthInputValidation.IsPasswordWithinBounds(input.CurrentPassword, requireMinimumLength: true))
         {
             throw InvalidCredentials();
         }
@@ -1195,7 +1215,8 @@ public sealed class AuthService(
         ChangeEmailInput input,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(input.CurrentPassword))
+        if (string.IsNullOrWhiteSpace(input.CurrentPassword) ||
+            !AuthInputValidation.IsPasswordWithinBounds(input.CurrentPassword, requireMinimumLength: true))
         {
             throw InvalidCredentials();
         }
@@ -1372,12 +1393,9 @@ public sealed class AuthService(
         return new NormalizedRegisterInput(email, password);
     }
 
-    private static string NormalizeEmail(string value) => value.Trim().ToLowerInvariant();
-
-    private static string NormalizeAndValidateEmail(string value)
+    private static string NormalizeAndValidateEmail(string? value)
     {
-        var email = NormalizeEmail(value);
-        if (email.Length is 0 or > MaxIdentifierLength || !new EmailAddressAttribute().IsValid(email))
+        if (!AuthInputValidation.TryNormalizeEmail(value, out var email))
         {
             throw GraphQlError("Email is invalid.", "INVALID_EMAIL");
         }
@@ -1389,8 +1407,6 @@ public sealed class AuthService(
     /// Maximum length of an email address per RFC 5321. Identifiers arriving on unauthenticated
     /// endpoints are capped at this length before they are persisted or logged.
     /// </summary>
-    private const int MaxIdentifierLength = 254;
-
     private const string VerificationCodeSentMessage =
         "If the account exists and still needs verification, a code has been sent.";
 
@@ -1422,10 +1438,9 @@ public sealed class AuthService(
 
     private static string NormalizeIdentifier(string? value)
     {
-        var identifier = NormalizeEmail(value ?? string.Empty);
-        return identifier.Length > MaxIdentifierLength
-            ? identifier[..MaxIdentifierLength]
-            : identifier;
+        return AuthInputValidation.TryNormalizeEmail(value, out var identifier)
+            ? identifier
+            : string.Empty;
     }
 
     /// <summary>
@@ -1457,6 +1472,16 @@ public sealed class AuthService(
             }
 
             throw GraphQlError("Refresh token is required.", "INVALID_REFRESH_TOKEN");
+        }
+
+        if (!AuthInputValidation.IsRefreshToken(refreshToken))
+        {
+            if (allowMissing)
+            {
+                return string.Empty;
+            }
+
+            throw GraphQlError("Refresh token is invalid or expired.", "INVALID_REFRESH_TOKEN");
         }
 
         return refreshToken;
@@ -1496,18 +1521,25 @@ public sealed class AuthService(
     private static GatewaySessionValidationPayload InvalidGatewaySession(long userId, long sessionId) =>
         new(false, userId, sessionId, null, null);
 
-    private static void ValidatePassword(string password)
+    private static void ValidatePassword(string? password)
     {
-        if (password.Length < 8)
+        if (!AuthInputValidation.IsPasswordWithinBounds(password, requireMinimumLength: true))
         {
-            throw GraphQlError("Password must be at least 8 characters long.", "WEAK_PASSWORD");
+            throw GraphQlError(
+                $"Password must be between 8 characters and {AuthInputValidation.MaxPasswordUtf8Bytes} UTF-8 bytes.",
+                "WEAK_PASSWORD");
         }
     }
 
-    private static string NormalizeOtp(string value)
+    private static string NormalizeOtp(string? value)
     {
+        if (value is null || value.Length > 6)
+        {
+            throw GraphQlError("Verification code must be 6 digits.", "INVALID_VERIFICATION_CODE");
+        }
+
         var otp = value.Trim();
-        if (otp.Length != 6 || otp.Any(character => !char.IsDigit(character)))
+        if (otp.Length != 6 || otp.Any(character => !char.IsAsciiDigit(character)))
         {
             throw GraphQlError("Verification code must be 6 digits.", "INVALID_VERIFICATION_CODE");
         }
@@ -1688,7 +1720,19 @@ public sealed class AuthService(
 
     private AccessTokenPrincipal GetCurrentPrincipal()
     {
-        var authorization = httpContextAccessor.HttpContext?.Request.Headers.Authorization.ToString();
+        var httpContext = httpContextAccessor.HttpContext;
+        if (httpContext is null)
+        {
+            throw Unauthenticated();
+        }
+
+        var authorizationValues = httpContext.Request.Headers.Authorization;
+        if (authorizationValues.Count != 1)
+        {
+            throw Unauthenticated();
+        }
+
+        var authorization = authorizationValues[0];
         if (string.IsNullOrWhiteSpace(authorization) ||
             !authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
         {
@@ -1696,7 +1740,8 @@ public sealed class AuthService(
         }
 
         var token = authorization["Bearer ".Length..].Trim();
-        if (string.IsNullOrWhiteSpace(token) ||
+        if (token.Length > 16 * 1024 ||
+            string.IsNullOrWhiteSpace(token) ||
             !tokenService.TryValidateAccessToken(token, out var principal) ||
             principal is null)
         {

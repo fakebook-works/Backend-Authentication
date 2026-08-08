@@ -61,7 +61,7 @@ public sealed class PaymentPremiumService(
 
     private static long ParseUserId(string value)
     {
-        if (!long.TryParse(value, out var userId) || userId <= 0)
+        if (!AuthInputValidation.TryParsePositiveId(value, out var userId))
         {
             throw Error("User id is invalid.", "INVALID_INPUT");
         }
